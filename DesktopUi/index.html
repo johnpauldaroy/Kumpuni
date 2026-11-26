@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kumpuni</title>
+<link rel="stylesheet" href="vendor/lenis/lenis.css">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="desktop.css">
+</head>
+<body class="desktop-app">
+<svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="0" height="0">
+<symbol id="i-printer" viewBox="0 0 24 24"><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v7H6zM17 12h1"/></symbol>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+<symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol>
+<symbol id="i-scan" viewBox="0 0 24 24"><path d="M8 4H6a2 2 0 0 0-2 2v2m12-4h2a2 2 0 0 1 2 2v2M4 16v2a2 2 0 0 0 2 2h2m12-4v2a2 2 0 0 1-2 2h-2M8 12h8"/></symbol>
+<symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14 7l3 3 4-4a6 6 0 0 1-8 8l-6 6a2 2 0 0 1-3-3l6-6a6 6 0 0 1 8-8z"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></symbol>
+<symbol id="i-net" viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="6" rx="1"/><path d="M12 9v4M4 16v-3h16v3"/><rect x="1" y="16" width="6" height="5" rx="1"/><rect x="17" y="16" width="6" height="5" rx="1"/></symbol>
+<symbol id="i-down" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.2 9a2.8 2.8 0 1 1 4 2.5c-.9.5-1.2 1-1.2 2.2m0 2.8h.01"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16M8 4v4m8 2v4m-6 2v4"/></symbol>
+</svg>
+<a class="skip" href="#main">Skip to content</a>
+<aside class="sidebar">
+  <a class="brand" href="#my-printer" aria-label="Kumpuni home"><img src="assets/logo.png" width="39" height="39" alt=""><span>Kumpuni</span></a>
+  <nav aria-label="Workspace">
+    <a class="nav-link" href="#my-printer" aria-current="location"><svg class="icon"><use href="#i-printer"/></svg>My printer</a>
+    <a class="nav-link" href="#technician"><svg class="icon"><use href="#i-grid"/></svg>Technician console</a>
+  </nav>
+  <div class="sidebar-foot"><a href="#help" class="nav-link"><svg class="icon"><use href="#i-help"/></svg>Help</a><button id="nativeTools" class="button text-button" type="button">Advanced tools</button></div>
+</aside>
+<main id="main" class="workspace">
+  <header class="page-head" id="my-printer">
+    <div><h1>My printer</h1><p>Set it up once. Check and fix whenever you need to.</p></div>
+    <span class="preview"><i></i> Windows</span>
+  </header>
+  <div class="overview">
+    <section class="hero" aria-labelledby="printerName" data-scene="my-printer">
+      <img class="hero-photo" src="assets/office-printer.webp" srcset="assets/office-printer-640.webp 640w, assets/office-printer.webp 1050w" sizes="(max-width: 570px) 70vw, (max-width: 820px) 50vw, 43vw" alt="" width="1050" height="700" fetchpriority="high">
+      <div class="hero-copy">
+        <span class="hero-tag"><i></i> <span id="savedLabel">Printer setup</span></span>
+        <h2 id="printerName">Choose your printer</h2>
+        <p id="printerPath" class="path">Installed printer or Windows share</p>
+        <button id="run" class="button primary" type="button"><svg class="icon"><use href="#i-scan"/></svg><span>Set up printer</span><svg class="icon arrow"><use href="#i-arrow"/></svg></button>
+      </div>
+    </section>
+    <section class="panel details" aria-labelledby="detailsTitle">
+      <div class="panel-title"><span class="tile"><svg class="icon"><use href="#i-net"/></svg></span><h2 id="detailsTitle">Connection</h2></div>
+      <dl>
+        <div><dt>Type</dt><dd id="connectionType">—</dd></div>
+        <div><dt>Location</dt><dd id="connectionHost">—</dd></div>
+        <div><dt>Default choice</dt><dd id="connectionDefault">—</dd></div>
+      </dl>
+      <button id="change" class="button text-button" type="button"><svg class="icon"><use href="#i-sliders"/></svg><span>Set up printer</span></button>
+    </section>
+  </div>
+  <section class="panel activity" id="last-check" data-scene="last-check" aria-labelledby="lastTitle">
+    <div class="section-head"><div><h2 id="lastTitle">Last check</h2><p id="runStatus" role="status" aria-live="polite">No check run yet.</p></div><button id="report" class="button outline" type="button" disabled><svg class="icon"><use href="#i-down"/></svg>Export report</button></div>
+    <ol class="steps" aria-label="Repair steps">
+      <li data-step="0"><div class="step-top"><span class="step-icon"><svg class="icon"><use href="#i-scan"/></svg></span><span class="step-line"></span></div><h3>Diagnose</h3><p id="step-0">Read the Windows queue.</p></li>
+      <li data-step="1"><div class="step-top"><span class="step-icon"><svg class="icon"><use href="#i-wrench"/></svg></span><span class="step-line"></span></div><h3>Apply repair</h3><p id="step-1">Run an eligible repair.</p></li>
+      <li data-step="2"><div class="step-top"><span class="step-icon"><svg class="icon"><use href="#i-check"/></svg></span></div><h3>Verify</h3><p id="step-2">Check the queue again.</p></li>
+    </ol>
+  </section>
+  <section class="panel console" id="technician" data-scene="technician" aria-labelledby="consoleTitle">
+    <div class="section-head"><div><h2 id="consoleTitle">Technician console</h2><p>Inspect the queues, drivers and ports visible to this Windows session.</p></div><div><button id="refreshInventory" class="button text-button" type="button">Refresh</button><button id="inventoryReport" class="button outline" disabled type="button"><svg class="icon"><use href="#i-down"/></svg>Export inventory</button></div></div>
+    <div class="tabs" role="tablist" aria-label="Inventory">
+      <button id="queuesTab" role="tab" type="button" aria-selected="true" aria-controls="inventory" data-tab="queues">Queues</button>
+      <button id="driversTab" role="tab" type="button" aria-selected="false" aria-controls="inventory" tabindex="-1" data-tab="drivers">Drivers</button>
+      <button id="portsTab" role="tab" type="button" aria-selected="false" aria-controls="inventory" tabindex="-1" data-tab="ports">Ports</button>
+    </div>
+    <div id="inventory" role="tabpanel" aria-labelledby="queuesTab" tabindex="0" class="table-wrap" data-lenis-prevent><p class="queue-result">Windows inventory has not loaded yet.</p></div>
+    <p id="queueResult" class="queue-result" role="status" aria-live="polite" hidden></p>
+  </section>
+  <section class="panel help" id="help" data-scene="help" aria-labelledby="helpTitle">
+    <h2 id="helpTitle">Printer help</h2>
+    <details><summary>What does Check and fix do?</summary><p>Kumpuni reads the saved Windows queue, applies eligible repairs and checks the result. Windows may ask for administrator approval.</p></details>
+    <details><summary>Does a ready result confirm a printed page?</summary><p>Ready means Windows verified the queue. Print a document to confirm physical output.</p></details>
+    <details><summary>Where are the guided checks and test pages?</summary><p>Use Advanced tools for guided USB, network and shared printer help, manual repairs, and test pages.</p></details>
+    <details><summary>What is in an exported report?</summary><p>Exports include findings and Windows check results. Inventory exports replace identifying queue, driver and port names with report-local IDs.</p></details>
+  </section>
+  <footer><p>Kumpuni is a Windows printer diagnostics and repair app.</p><p>Developed by Innovatech Hub.</p></footer>
+</main>
+<dialog id="setup" aria-labelledby="setupTitle" data-lenis-prevent>
+  <form id="setupForm">
+    <div class="dialog-head"><h2 id="setupTitle">Set up your printer</h2><button type="button" class="button icon-button" id="closeSetup" aria-label="Close printer setup"><svg class="icon"><use href="#i-close"/></svg></button></div>
+    <p>Choose a printer once. Kumpuni saves it for your Windows account.</p>
+    <label for="printerSelect">Installed printer</label>
+    <select id="printerSelect"><option value="">Choose a printer</option></select>
+    <label for="printerPathInput">Or enter a trusted shared path</label>
+    <input id="printerPathInput" class="button outline" maxlength="512" placeholder="\\PRINT-PC\Office" autocomplete="off" spellcheck="false">
+    <label class="checkbox"><input type="checkbox" id="makeDefault">Make this my Windows default when ready</label>
+    <p>Check and fix can connect this queue and apply eligible repairs. Windows may ask for administrator approval.</p>
+    <p id="setupStatus" role="status" aria-live="polite"></p>
+    <div class="dialog-actions"><button id="cancelSetup" class="button outline" type="button">Cancel</button><button class="button save" type="submit">Save printer</button></div>
+  </form>
+</dialog>
+<script src="vendor/gsap/gsap.min.js" defer></script>
+<script src="vendor/gsap/ScrollTrigger.min.js" defer></script>
+<script src="vendor/lenis/lenis.min.js" defer></script>
+<script src="desktop.js" defer></script>
+</body>
+</html>
+

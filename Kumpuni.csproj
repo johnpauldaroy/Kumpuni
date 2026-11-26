@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>Kumpuni</AssemblyName>
+    <Product>Kumpuni</Product>
+    <Company>Innovatech Hub</Company>
+    <Authors>Innovatech Hub</Authors>
+    <Description>Kumpuni is a Windows printer diagnostics and repair app.</Description>
+    <Copyright>Copyright © Innovatech Hub</Copyright>
+    <ApplicationIcon>assets/kumpuni.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Velopack" Version="1.2.161" />
+    <AssemblyMetadata Include="KumpuniUpdateFeed" Value="$(KumpuniUpdateFeed)" Condition="'$(KumpuniUpdateFeed)' != ''" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4022.49" />
+    <EmbeddedResource Include="DesktopUi/index.html" LogicalName="Kumpuni.Ui.index.html" />
+    <EmbeddedResource Include="DesktopUi/desktop.css" LogicalName="Kumpuni.Ui.desktop.css" />
+    <EmbeddedResource Include="DesktopUi/desktop.js" LogicalName="Kumpuni.Ui.desktop.js" />
+    <EmbeddedResource Include="Kumpuni UI Mockup/styles.css" LogicalName="Kumpuni.Ui.styles.css" />
+    <EmbeddedResource Include="Kumpuni UI Mockup/assets/logo.png" LogicalName="Kumpuni.Ui.logo.png" />
+    <EmbeddedResource Include="Kumpuni UI Mockup/assets/office-printer.webp" LogicalName="Kumpuni.Ui.office-printer.webp" />
+    <EmbeddedResource Include="Kumpuni UI Mockup/assets/office-printer-640.webp" LogicalName="Kumpuni.Ui.office-printer-640.webp" />
+    <EmbeddedResource Include="Kumpuni UI Mockup/vendor/lenis/lenis.css" LogicalName="Kumpuni.Ui.lenis.css" />
+    <EmbeddedResource Include="Kumpuni UI Mockup/vendor/lenis/lenis.min.js" LogicalName="Kumpuni.Ui.lenis.min.js" />
+    <EmbeddedResource Include="Kumpuni UI Mockup/vendor/gsap/gsap.min.js" LogicalName="Kumpuni.Ui.gsap.min.js" />
+    <EmbeddedResource Include="Kumpuni UI Mockup/vendor/gsap/ScrollTrigger.min.js" LogicalName="Kumpuni.Ui.ScrollTrigger.min.js" />
+    <EmbeddedResource Include="assets/kumpuni-logo.png" LogicalName="Kumpuni.Brand.Logo.png" />
+    <EmbeddedResource Include="assets/office-printer.jpg" LogicalName="Kumpuni.Brand.Printer.jpg" />
+    <EmbeddedResource Include="assets/kumpuni.ico" LogicalName="Kumpuni.Brand.Icon.ico" />
+    <EmbeddedResource Include="KnownIssues/known-issues.json" LogicalName="Kumpuni.KnownIssues.json" />
+  </ItemGroup>
+  <Target Name="RemoveUnusedWebView2Wpf" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+</Project>

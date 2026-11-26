@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "updated": "2026-11-26",
+  "issues": [
+    {
+      "id": "gdi-zero-size-images-2026-11",
+      "title": "November 2026 update: some documents fail to print",
+      "detail": "Microsoft confirmed that the November 2026 updates can make GDI printing fail for documents that contain images with zero height or width, mostly Microsoft Word documents. This affects printing, not the printer connection. Microsoft has not announced a fix yet.",
+      "status": "confirmed",
+      "url": "https://learn.microsoft.com/en-us/windows/release-health/",
+      "minBuild": 10240
+    },
+    {
+      "id": "type3-framework-2026-09",
+      "title": "September 2026 update: shared Type 3 printers fail with 0x00000006",
+      "detail": "Administrators reported that the September 2026 updates replaced the shared Type 3 print framework files (UNIDRV.DLL, UNIDRVUI.DLL, UNIRES.DLL, PSCRIPT5.DLL, PS5UI.DLL). Clients then fail to add printers from a Windows print server with 0x00000006. Compare the framework file versions on the client and host reports. Microsoft had not acknowledged this issue when this list was updated.",
+      "status": "reported",
+      "url": "https://learn.microsoft.com/en-us/windows/release-health/",
+      "builds": [19045, 20348],
+      "codes": [6]
+    },
+    {
+      "id": "secure-smb-24h2",
+      "title": "Windows 11 24H2 and later: guest and unsigned SMB access is blocked",
+      "detail": "Windows 11 24H2 and later block guest SMB access and require SMB signing by default. Printers shared from another PC can then fail with 0x00000709 even when the share name is correct. Sign in to the print host with an account that has access to it.",
+      "status": "by-design",
+      "url": "https://learn.microsoft.com/en-gb/answers/questions/2224577/windows-24h2-version-connection-to-shared-printer",
+      "minBuild": 26100,
+      "codes": [1801, 1272]
+    }
+  ]
+}

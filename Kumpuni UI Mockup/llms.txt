@@ -1,0 +1,9 @@
+# Kumpuni
+
+> Kumpuni is a Windows printer diagnostics and repair app.
+
+This interactive mockup demonstrates printer selection, simulated diagnosis, repair and verification, and a technician console with queue, driver and port inventory. It uses demo data.
+
+## Pages
+
+- [Kumpuni UI Mockup](https://kumpuni-ui-mockup.trypragma.site/): Try the demo and download its redacted reports.
