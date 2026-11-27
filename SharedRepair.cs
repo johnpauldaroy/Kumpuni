@@ -264,8 +264,17 @@ internal static class SharedRepair
         Repair.EnableSmbServer => report.Connectivity?.Health is null ? null : !report.Connectivity.ServerBindingOff,
         Repair.SecureHostSharing => report.Connectivity?.Health is null || report.Sharing?.Firewall is not FirewallReading firewall
             ? null : report.Connectivity.Health.Categories is ["Private"] && firewall.ActiveProfiles == 2 && (firewall.EnabledLocally & 2) != 0,
-        Repair.SignInToHost => report.Queue is { Code: 0 } || report.Connectivity?.Session is { Error: 0 } or { IpcError: 0 }
-            ? true : report.Connectivity?.Session is { IpcError: int } ? false : null,
+        Repair.SignInToHost => report.Queue?.Code switch
+        {
+            0 => true,
+            Diagnose.PrintRpcSecurityError => false,
+            _ => report.Connectivity?.PrintServerError switch
+            {
+                0 => true,
+                Diagnose.PrintRpcSecurityError => false,
+                _ => report.Connectivity?.Session is { IpcError: int and not 0 } ? false : null
+            }
+        },
         Repair.Connect or Repair.Reconnect => report.Inventory is { InventoryError: 0 } inventory
             ? inventory.Connections.Any(connection => Diagnose.Same(connection, target.Path)) : null,
         Repair.SetDefault => report.Inventory is { DefaultError: 0 } defaults ? Diagnose.Same(defaults.Default, target.Path) : null,
@@ -286,14 +295,16 @@ internal static class SharedRepair
             ActionResult result = await apply(action);
             DateTimeOffset finished = DateTimeOffset.UtcNow;
             latest = await recheck();
-            bool? stateMatches = latest is null ? null : ReadBack(action, target, latest);
+            bool? stateMatches = latest is null || !result.Verified ? null : ReadBack(action, target, latest);
             steps.Add(new(action, started, finished, result, latest is not null, stateMatches));
             if (latest is null)
                 return new(initial, null, steps.ToArray(), "Windows did not return post-repair evidence. Check the action results before retrying.");
             if (!result.Verified)
                 return new(initial, latest, steps.ToArray(), "A repair could not be verified. Review the action log and remaining finding.");
             if (stateMatches == false)
-                return new(initial, latest, steps.ToArray(), "The follow-up check found a different state from the repair result. Review the before and after evidence.");
+                return new(initial, latest, steps.ToArray(), action == Repair.SignInToHost
+                    ? "Windows still could not authenticate the print connection. Check that the host account is authorized and that other connections use matching credentials."
+                    : "The follow-up check found a different state from the repair result. Review the before and after evidence.");
         }
 
         string summary = steps.Count == 0

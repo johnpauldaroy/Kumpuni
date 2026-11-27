@@ -17,7 +17,7 @@ internal sealed class MainForm : Form
         AutoSize = true, Text = "Restore RPC privacy if explicitly disabled (this print host only)"
     };
     private readonly Button _repair = MakeButton("Apply repair");
-    private readonly Button _createPrintingAccount = MakeButton("Create printing account");
+    private readonly Button _createPrintingAccount = MakeButton("Prepare printing account");
     private readonly Button _settings = MakeButton("Windows printer settings");
     private readonly Button _stageDriver = MakeButton("Stage approved driver");
     private readonly Button _export = MakeButton("Export report");
@@ -491,7 +491,7 @@ internal sealed class MainForm : Form
         try
         {
             if (action == Repair.SignInToHost)
-                return HostSignIn.SignIn(target, Handle);
+                return await HostSignIn.SignInAsync(target, this);
             ActionResult? result = Diagnose.Elevated(action)
                 ? await Worker.RunElevatedRepairAsync(target, action)
                 : (await Worker.RunAsync("--repair", target.Path, action))?.Action;
@@ -522,7 +522,7 @@ internal sealed class MainForm : Form
             Repair.SecureHostSharing => "Enable the required Private printing rules and firewall, then set the active network to Private if needed? "
                 + "Only continue on a network you trust, such as your office or home network. Windows asks for administrator approval.",
             Repair.SignInToHost => "Sign in to this print host through Windows and reconnect if needed? Use an account that has Print permission. "
-                + "Select Remember my credentials if Windows offers it. Windows handles the password.",
+                + "You can save the credential for other Windows apps. Windows handles the password.",
             _ => "Apply this repair?"
         };
         if (MessageBox.Show(this, $"{_target.Path}\n\n{prompt}", ActionLabel(action),
@@ -563,10 +563,10 @@ internal sealed class MainForm : Form
         if (_busy || _target is not Target target || !PrintingAccount.CanCreate(_report))
             return;
         string account = $@"{Environment.MachineName}\{PrintingAccount.Name}";
-        if (MessageBox.Show(this, $"Create the standard local account {account} on this print host? "
-            + "Windows asks for administrator approval and opens a console where you enter a new, nonblank password twice. "
-            + "The account needs Print permission on the selected queue.",
-            "Create printing account", MessageBoxButtons.OKCancel, MessageBoxIcon.Question,
+        if (MessageBox.Show(this, $"Prepare {account} and grant it Print permission on this printer? "
+            + "Windows asks for administrator approval. If the account needs to be created, enter a new password at the Windows prompt. "
+            + "An existing account keeps its password.",
+            "Prepare printing account", MessageBoxButtons.OKCancel, MessageBoxIcon.Question,
             MessageBoxDefaultButton.Button2) != DialogResult.OK)
             return;
 
@@ -578,9 +578,9 @@ internal sealed class MainForm : Form
             if (IsDisposed)
                 return;
             string details = result.Verified
-                ? $"\n\nOn the client, open Kumpuni and sign in as {account}. If access is denied, check Print permission on the host's printer Security tab."
+                ? $"\n\nOn the client, run Check and fix and save the Windows credential for {account} when prompted."
                 : result.Code is int code ? $"\n\nWindows result: {code}." : "";
-            MessageBox.Show(this, result.Message + details, "Create printing account", MessageBoxButtons.OK,
+            MessageBox.Show(this, result.Message + details, "Prepare printing account", MessageBoxButtons.OK,
                 result.Verified ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         }
         finally

@@ -169,6 +169,14 @@ internal static class Checks
             && SharedRepair.Next(TaskKind.Connect, target, healthy with { Queue = new(1272) }, null, false, new HashSet<Repair>()) == Repair.SignInToHost
             && SharedRepair.Next(TaskKind.Connect, target, healthy with { Queue = new(1272) }, null, false,
                 new HashSet<Repair> { Repair.SignInToHost }) == Repair.None);
+        string suggestedAccount = HostSignIn.SuggestedAccount(target);
+        System.Diagnostics.ProcessStartInfo credentialPrompt = HostSignIn.CredentialPrompt(target, suggestedAccount);
+        Check("Persistent host sign-in invokes the Windows password prompt for the selected host without passing a password",
+            suggestedAccount == @"PRINT01\printshare" && HostSignIn.IsAccount(suggestedAccount)
+            && HostSignIn.SuggestedAccount(new("192.0.2.1", target.Share)) == ""
+            && HostSignIn.IsAccount("operator@example.test") && !HostSignIn.IsAccount(@"PRINT01\operator /pass:invalid")
+            && Path.GetFileName(credentialPrompt.FileName) == "cmdkey.exe" && credentialPrompt.UseShellExecute && credentialPrompt.Verb == ""
+            && credentialPrompt.ArgumentList.SequenceEqual(["/add:PRINT01.example", @"/user:PRINT01\printshare", "/pass"]));
         Check("0x00000006 points to Type 3 print framework differences without offering a file change",
             DecisionFor(TaskKind.Connect, healthy with { Queue = new(6) }) is { Action: Repair.None } framework
                 && framework.Details.Contains("UNIDRV.DLL") && framework.Details.Contains("Do not copy")
@@ -218,8 +226,25 @@ internal static class Checks
             }) is { Action: Repair.SignInToHost } ambiguous && ambiguous.Details.Contains("If the host offered guest access")
             && DecisionFor(TaskKind.Connect, blockedSession with
             {
-                Connectivity = link with { Session = link.Session! with { IpcError = 0 } }
+                Connectivity = link with { Session = link.Session! with { IpcError = 0 }, PrintServerError = 0 }
             }, 0xC05D0003).Action == Repair.None);
+        Report ipcOpened = blockedSession with { Connectivity = link with { Session = link.Session! with { IpcError = 0 }, PrintServerError = 0 } };
+        Check("An open SMB session leaves queue errors 1801 and 5 to printer diagnosis instead of prompting again",
+            DecisionFor(TaskKind.Connect, ipcOpened with { Queue = new(1801) }) is { Action: Repair.None } queuePath
+            && queuePath.Finding.Contains("SMB opened")
+            && DecisionFor(TaskKind.Connect, ipcOpened with { Queue = new(5) }) is { Action: Repair.None } queueAccess
+            && queueAccess.Details.Contains("Print permission")
+            && DecisionFor(TaskKind.Connect, ipcOpened with { Queue = new(1326) }).Action == Repair.SignInToHost);
+        Report rpcBlocked = ipcOpened with
+        {
+            Inventory = absent,
+            Connectivity = ipcOpened.Connectivity! with { PrintServerError = Diagnose.PrintRpcSecurityError }
+        };
+        Check("An authenticated SMB session and print RPC error 1825 offer a saved Windows credential",
+            DecisionFor(TaskKind.Connect, rpcBlocked) is { Action: Repair.SignInToHost } rpcDecision
+            && rpcDecision.Finding.Contains("0x80070721")
+            && DecisionFor(TaskKind.Connect, rpcBlocked with { Queue = new(6) }).Action == Repair.None
+            && DecisionFor(TaskKind.Connect, healthy with { Queue = new(Diagnose.PrintRpcSecurityError) }).Action == Repair.SignInToHost);
         Check("IPC credential conflicts preserve existing sessions and restrictions offer sign-in",
             DecisionFor(TaskKind.Connect, WithIpcError(1219)) is { Action: Repair.None } conflict
             && conflict.Finding.Contains("conflicting connection") && conflict.Details.Contains("1219")
@@ -399,6 +424,8 @@ internal static class Checks
             && !PrintingAccount.CanCreate(accountHost with { Machine = machine with { Workstation = false } })
             && !PrintingAccount.CanCreate(blockedSession)
             && PrintingAccount.CreateAsync(new("fixture.invalid", "Printer")).GetAwaiter().GetResult() is { Verified: false, Code: 87 }
+            && PrintingAccount.Prepare(new("fixture.invalid", "Printer")) == 87
+            && !PrintingAccount.CanCreate(accountHost with { Sharing = accountHost.Sharing! with { RemoteSpooler = new(2) } })
             && SharedRepair.Next(TaskKind.Connect, target, accountHost, null, false, none) == Repair.None
             && DecisionFor(TaskKind.Connect, guestOnlyHost).Finding.Contains("maps local network sign-ins to Guest"));
         Check("RPC privacy repair requires explicit consent, local published share and a disabled DWORD",
@@ -423,6 +450,26 @@ internal static class Checks
             signInRun.Steps is [{ Action: Repair.SignInToHost, StateMatches: true }, { Action: Repair.Connect, StateMatches: true }]
             && signInRun.Final == after && signInSnapshots.Count == 0
             && unconfirmedSignIn.Steps is [{ Action: Repair.SignInToHost, StateMatches: false }]);
+        ActionResult extendedSignIn = HostSignIn.DescribeResult(1208, Connectivity.GuestSigningRequired);
+        QuickOutcome signInFailure = QuickRepair.RunSharedAsync(new(target.Path, true, false), target,
+            () => Task.FromResult<Report?>(signingBlocked), _ => Task.FromResult(extendedSignIn)).GetAwaiter().GetResult();
+        Check("Extended sign-in errors retain the provider code and the original failure message after recheck",
+            extendedSignIn is { Verified: false, Code: 1208 } && extendedSignIn.Message.Contains("0xC05D0003")
+            && HostSignIn.DescribeResult(1208).Message.Contains("did not supply a more specific code")
+            && signInFailure.Steps is [{ Verified: false, Code: 1208 } step] && step.Message == extendedSignIn.Message
+            && signInFailure.SharedRun?.Steps is [{ RecheckCompleted: true, StateMatches: null }]);
+        var rpcSnapshots = new Queue<Report?>([rpcBlocked, before with { Connectivity = ipcOpened.Connectivity }, after]);
+        ActionResult savedCredential = new("Windows saved the credential.", Verified: true);
+        QuickOutcome repairedRpc = QuickRepair.RunSharedAsync(new(target.Path, true, false), target,
+            () => Task.FromResult(rpcSnapshots.Dequeue()), _ => Task.FromResult(savedCredential)).GetAwaiter().GetResult();
+        QuickOutcome blockedRpc = QuickRepair.RunSharedAsync(new(target.Path, true, false), target,
+            () => Task.FromResult<Report?>(rpcBlocked), _ => Task.FromResult(savedCredential)).GetAwaiter().GetResult();
+        Check("Check and fix requires print RPC after saving credentials and connects a verified queue",
+            repairedRpc.Ready && rpcSnapshots.Count == 0
+            && repairedRpc.SharedRun?.Steps is [{ Action: Repair.SignInToHost, StateMatches: true }, { Action: Repair.Connect, StateMatches: true }]
+            && !blockedRpc.Ready
+            && blockedRpc.SharedRun?.Steps is [{ Action: Repair.SignInToHost, StateMatches: false }]
+            && blockedRpc.Steps is [{ Verified: false } blockedStep] && blockedStep.Message.Contains("could not authenticate"));
         var snapshots = new Queue<Report?>([healthy, after]);
         SharedRepairRun run = SharedRepair.ExecuteAsync(TaskKind.Default, target, before, null, false,
             _ => Task.FromResult(new ActionResult("Verified by Windows.", Verified: true)),

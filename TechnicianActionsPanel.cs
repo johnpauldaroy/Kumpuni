@@ -6,7 +6,7 @@ using System.Text.Json;
 
 namespace Kumpuni;
 
-internal enum TechnicianAction { RegisterDriver, ShareQueue, GrantPrint, ResumeJob, RestartJob, CancelJob, RetryConnection }
+internal enum TechnicianAction { RegisterDriver, ShareQueue, GrantPrint, ResumeJob, RestartJob, CancelJob, RetryConnection, PreparePrintingAccount }
 internal sealed record TechnicianActionRecord(DateTimeOffset Time, TechnicianAction Action, int Code, bool Verified);
 
 internal sealed class TechnicianActionsPanel : UserControl

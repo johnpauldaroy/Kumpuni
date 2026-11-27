@@ -74,7 +74,7 @@ internal static partial class NativePrinting
             && Diagnose.Same(entry.Details?.Share, share)) ? 0 : QueueHasChanged;
     }
 
-    public static int GrantQueuePrint(string name, string account)
+    public static int GrantQueuePrint(string name, string account, string? expectedShare = null)
     {
         if (account.Split('\\') is not [string domain, string principal] || string.IsNullOrWhiteSpace(domain)
             || string.IsNullOrWhiteSpace(principal) || account.Length > 256 || account.Any(char.IsControl))
@@ -83,7 +83,8 @@ internal static partial class NativePrinting
         Catalog<QueueEntry> queues = LocalQueues();
         if (queues.Error != 0)
             return queues.Error;
-        QueueEntry? queue = queues.Items.FirstOrDefault(item => item.Scope == QueueScope.SharedHere && Diagnose.Same(item.Name, name));
+        QueueEntry? queue = queues.Items.FirstOrDefault(item => item.Scope == QueueScope.SharedHere && Diagnose.Same(item.Name, name)
+            && (expectedShare is null || Diagnose.Same(item.Details?.Share, expectedShare)));
         if (queue is null)
             return 1801;
 

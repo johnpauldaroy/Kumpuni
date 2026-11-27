@@ -80,7 +80,7 @@ internal static class QuickRepair
         Task<ActionResult> Apply(Repair action)
         {
             if (action == Repair.SignInToHost)
-                return AttemptAsync(() => Task.FromResult(HostSignIn.SignIn(target, Form.ActiveForm?.Handle ?? IntPtr.Zero)));
+                return AttemptAsync(() => HostSignIn.SignInAsync(target, Form.ActiveForm));
             return AttemptAsync(() => Diagnose.Elevated(action)
                 ? ApplyElevatedAsync(target, action) : ApplyWorkerAsync("--repair", target.Path, action));
         }
@@ -125,7 +125,9 @@ internal static class QuickRepair
         return new(title, detail, ready,
             run.Steps.Select(step => new QuickStep(MainForm.ActionLabel(step.Action),
                 step.Result.Verified && step.StateMatches != false, step.Result.Code,
-                step.StateMatches == false ? "The follow-up check found a different state." : step.Result.Message)).ToArray(),
+                step.StateMatches == false && step.Action == Repair.SignInToHost
+                    ? "Windows still could not authenticate the print connection."
+                    : step.StateMatches == false ? "The follow-up check found a different state." : step.Result.Message)).ToArray(),
             DateTimeOffset.UtcNow, last, finding, run);
 
         Task<ActionResult> Apply(Repair action)

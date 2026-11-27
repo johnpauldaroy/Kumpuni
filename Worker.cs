@@ -327,6 +327,8 @@ internal static class Worker
                 (TechnicianAction.RegisterDriver, [string inf, string model]) => DriverRegistration.Register(inf, model),
                 (TechnicianAction.ShareQueue, [string name, string share]) => NativePrinting.PublishQueue(name, share),
                 (TechnicianAction.GrantPrint, [string name, string account]) => NativePrinting.GrantQueuePrint(name, account),
+                (TechnicianAction.PreparePrintingAccount, [string queuePath]) when Target.Parse(queuePath) is Target target =>
+                    PrintingAccount.Prepare(target),
                 (TechnicianAction.ResumeJob or TechnicianAction.RestartJob or TechnicianAction.CancelJob,
                     [string name, string number, string stamp]) when uint.TryParse(number, out uint id) && id > 0
                     && stamp.Length == 17 && stamp.All(char.IsAsciiDigit) => NativePrinting.ChangeQueueJob(name, id, stamp, action switch

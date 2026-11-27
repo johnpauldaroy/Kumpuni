@@ -91,9 +91,20 @@ internal static class Connectivity
     private static int? ProbeIpc(string host)
     {
         string path = $@"\\{host}\IPC$";
-        int existing = NetUseGetInfo(null, path, 0, out IntPtr buffer);
-        if (buffer != IntPtr.Zero)
-            NetApiBufferFree(buffer);
+        int existing = NetUseGetInfo(null, path, 1, out IntPtr buffer);
+        try
+        {
+            if (existing == 0 && buffer != IntPtr.Zero)
+            {
+                int statusOffset = Marshal.OffsetOf<UseInfo1>(nameof(UseInfo1.Status)).ToInt32();
+                return Marshal.ReadInt32(buffer, statusOffset) == 0 ? 0 : null;
+            }
+        }
+        finally
+        {
+            if (buffer != IntPtr.Zero)
+                NetApiBufferFree(buffer);
+        }
         const int useNotFound = 2250;
         if (existing != useNotFound)
             return null;

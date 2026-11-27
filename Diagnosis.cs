@@ -73,6 +73,7 @@ internal sealed record WorkerReply(Report? Report = null, Inventory? Inventory =
 internal static class Diagnose
 {
     internal const int SecureSmbBuild = 26100;
+    internal const int PrintRpcSecurityError = 1825;
     internal static bool Elevated(Repair action) => action is Repair.StartSpooler or Repair.StartHostSpooler or Repair.StartLanmanServer
         or Repair.RestoreRpcPrivacy or Repair.EnableSmbClient or Repair.EnableSmbServer or Repair.SecureHostSharing;
     internal const uint QueueNeedsAttention = 0x1 | 0x2 | 0x8 | 0x10 | 0x40 | 0x80 | 0x1000 | 0x100000;
@@ -159,6 +160,13 @@ internal static class Diagnose
         if (queue?.Code != 0 && SmbSecurityDecision(report, reported) is Decision smbSecurity)
             return smbSecurity;
 
+        if (queue is { Code: PrintRpcSecurityError }
+            || (queue is null or { Code: 3 or 5 or 1801 or 1722 or 1753 }
+                && report.Connectivity is { PrintServerError: PrintRpcSecurityError, Session: { IpcError: 0 } or { Error: 0, SharePublished: true } }))
+            return new("Windows could not authenticate print RPC (0x80070721).", "Client user or print host administrator",
+                "Windows reported a security package error while opening the print server. Save an authorized host account as a Windows credential "
+                + "for this user, then check print RPC and the selected queue again.", Repair.SignInToHost);
+
         if (queue is null)
             return new("The live queue check did not complete.", "Client user or IT",
                 "Check host availability and retry diagnosis. No repair is available until the selected queue is verified.");
@@ -167,10 +175,15 @@ internal static class Diagnose
         {
             if (report.Connectivity is ConnectivityEvidence link && SessionDecision(link, report) is Decision session)
                 return session;
+            bool smbOpened = report.Connectivity?.Session is { Error: 0 } or { IpcError: 0 };
             if (task == TaskKind.Connect && queue.Code == 1801
                 && report.Machine is { Build: 22000, Revision: 258 or 282 or 318 })
                 return new("The client matches a historical Windows 11 regression build.", "IT administrator",
                     "Confirm the host and patch history against KB5007262. Apply a current supported update through IT.");
+
+            if (queue.Code == 1801 && smbOpened)
+                return new("SMB opened, but Windows could not open the shared print queue (0x00000709).", "Client user or print host operator",
+                    "Confirm the exact share name and Print permission on the host. Try adding the printer in Windows to get the queue or driver error.");
 
             if (queue.Code == 1801 && report.Machine.Build >= SecureSmbBuild && report.Network is { NameResolved: true, Smb: true })
                 return new("Windows 11 24H2 or later could not open the shared queue (0x00000709).", "Client user or print host operator",
@@ -184,6 +197,8 @@ internal static class Diagnose
                     "Confirm the exact share name and use the approved Windows computer name. If the share was renamed, diagnose the confirmed new path."),
                 53 => new("Windows could not reach the network path.", "Client user or network administrator",
                     "Verify the host name, route and authenticated SMB access where the connection uses SMB."),
+                5 when smbOpened => new("Windows denied access to the print queue after SMB opened.", "Print host operator",
+                    "Check that the account used for this connection has Print permission on the host printer's Security tab."),
                 5 => new("Windows denied basic access to the selected queue.", "Print host operator",
                     "Check the identity Windows is using and the queue's Print permission. If credentials are required, sign in to the print host through Windows.",
                     Repair.SignInToHost),
@@ -192,6 +207,8 @@ internal static class Diagnose
                 1219 => SmbCredentialConflict(),
                 1327 or 1385 => SmbAccountRestricted(queue.Code),
                 6 => FrameworkDecision(report),
+                3 when smbOpened => new("Windows could not find a path required to open the shared printer (0x00000003).", "Client user or print host operator",
+                    "SMB opened. Check the host print server result and the selected queue's ShareName, Print permission and driver."),
                 3 => new("Windows could not find the printer path on the host (0x00000003).", "Client user or print host operator",
                     "The host answered but did not return this printer. Confirm the share name on the host's Sharing tab, "
                     + "and run Shared printer repair on the host with the same path to compare the reports."),
@@ -304,7 +321,7 @@ internal static class Diagnose
 
         static Decision GuestBlocked(string finding, int code) => new(finding, "Client user or print host administrator",
             $"Windows returned {CodeText(code)}. Sign in with a password-protected account that has Print permission on the host. "
-            + "In Windows, select Remember my credentials if available. Kumpuni checks the queue again after sign-in.",
+            + "Save the credential in Windows so Windows apps can use it. Kumpuni checks print RPC and the queue again after sign-in.",
             Repair.SignInToHost);
     }
 
