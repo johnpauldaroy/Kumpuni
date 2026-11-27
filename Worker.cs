@@ -75,6 +75,13 @@ internal static class Worker
             if (process is null)
                 return new("Windows did not start the elevated helper.");
             await process.WaitForExitAsync();
+            if (action == Repair.SecureHostSharing)
+            {
+                if (process.ExitCode == 50)
+                    return new("Windows must report one active Public or Private network to apply this repair.", Code: 50);
+                if (process.ExitCode == 1260)
+                    return new("The active Windows firewall policy did not verify the required Private printing rules or firewall state.", Code: 1260);
+            }
             if (process.ExitCode != 0)
                 return new($"Windows did not verify the requested change to {subject}.", Code: process.ExitCode);
             return action switch

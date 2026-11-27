@@ -223,16 +223,30 @@ internal static class Connectivity
         if ($off.Count -eq 0) { 'ok' | ConvertTo-Json } else { exit 13 }
         """;
 
-    // Rules first, then the Private category, then the firewall: clients keep access at every step.
+    // Prepare and verify Private sharing before changing the selected network category.
     private const string SecureSharingScript = """
         $ErrorActionPreference = 'Stop'
-        Get-NetFirewallRule -Group '@FirewallAPI.dll,-28502' | Where-Object {
-            $_.Direction -eq 'Inbound' -and ([int]$_.Profile -eq 0 -or ([int]$_.Profile -band 2) -ne 0) } | Enable-NetFirewallRule
-        Get-NetConnectionProfile | Where-Object NetworkCategory -eq 'Public' | Set-NetConnectionProfile -NetworkCategory Private
+        $profiles = @(Get-NetConnectionProfile)
+        if ($profiles.Count -ne 1 -or [string]$profiles[0].NetworkCategory -notin 'Private','Public') { exit 50 }
+        $profile = $profiles[0]
+        $names = @('FPS-SMB-In-TCP','FPS-RPCSS-In-TCP','FPS-SpoolSvc-In-TCP')
+        $rules = @(Get-NetFirewallRule -PolicyStore PersistentStore -Group '@FirewallAPI.dll,-28502' | Where-Object {
+            $_.Name -in $names -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow' -and
+            ([int]$_.Profile -eq 0 -or ([int]$_.Profile -band 2) -ne 0) })
+        if ($rules.Count -ne $names.Count) { exit 13 }
+        $rules | Where-Object Enabled -ne 'True' | Set-NetFirewallRule -Profile Private -Enabled True
+        $allowed = @(Get-NetFirewallRule -PolicyStore ActiveStore -Name $names | Where-Object {
+            $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow' -and $_.Enabled -eq 'True' -and
+            ([int]$_.Profile -eq 0 -or ([int]$_.Profile -band 2) -ne 0) } | Select-Object -ExpandProperty Name -Unique)
+        if ($allowed.Count -ne $names.Count) { exit 1260 }
         Set-NetFirewallProfile -Profile Private -Enabled True
-        $public = @(Get-NetConnectionProfile | Where-Object NetworkCategory -eq 'Public')
-        $private = Get-NetFirewallProfile -Profile Private
-        if ($public.Count -eq 0 -and $private.Enabled) { 'ok' | ConvertTo-Json } else { exit 13 }
+        if ((Get-NetFirewallProfile -PolicyStore ActiveStore -Profile Private).Enabled -ne 'True') { exit 1260 }
+        if ($profile.NetworkCategory -eq 'Public') {
+            Set-NetConnectionProfile -InputObject $profile -NetworkCategory Private
+        }
+        $after = @(Get-NetConnectionProfile)
+        if ($after.Count -eq 1 -and $after[0].InterfaceIndex -eq $profile.InterfaceIndex -and
+            $after[0].NetworkCategory -eq 'Private') { 'ok' | ConvertTo-Json } else { exit 13 }
         """;
 
     private const string HealthScript = """

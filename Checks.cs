@@ -128,6 +128,12 @@ internal static class Checks
             new[] { "709", "1801", "0x00000709", "0X80070709" }.All(s => Diagnose.ParseReported(s) == 1801));
         Check("Non-Win32 HRESULT stays raw", Diagnose.ParseReported("0x80041003") == 0x80041003);
         Check("Access-denied HRESULT", Diagnose.ParseReported("0x80070005") == 5);
+        const string installedExe = @"C:\Kumpuni.Desktop\current\Kumpuni.exe";
+        Check("Only another process from the same installation blocks an update when its path is known",
+            AppUpdates.IsInstallPeer(installedExe, installedExe.ToLowerInvariant(), sameSession: false)
+            && !AppUpdates.IsInstallPeer(installedExe, @"C:\Downloads\Kumpuni.exe", sameSession: true)
+            && AppUpdates.IsInstallPeer(installedExe, null, sameSession: true)
+            && !AppUpdates.IsInstallPeer(installedExe, null, sameSession: false));
         Check("Connect verified queue", DecisionFor(TaskKind.Connect, healthy with { Inventory = absent }).Action == Repair.Connect);
         Check("Renamed queue is a separate connection",
             Diagnose.Choose(TaskKind.Connect, other, healthy, 1801).Action == Repair.Connect);
@@ -214,6 +220,16 @@ internal static class Checks
             {
                 Connectivity = link with { Session = link.Session! with { IpcError = 0 } }
             }, 0xC05D0003).Action == Repair.None);
+        Check("IPC credential conflicts preserve existing sessions and restrictions offer sign-in",
+            DecisionFor(TaskKind.Connect, WithIpcError(1219)) is { Action: Repair.None } conflict
+            && conflict.Finding.Contains("conflicting connection") && conflict.Details.Contains("1219")
+            && new[] { 1327, 1385 }.All(code => DecisionFor(TaskKind.Connect, WithIpcError(code)) is
+                { Action: Repair.SignInToHost } restriction && restriction.Finding.Contains("restricted")));
+
+        Report WithIpcError(int code) => blockedSession with
+        {
+            Connectivity = link with { Session = link.Session! with { IpcError = code } }
+        };
         Check("RPC 135 is not proof of print RPC",
             DecisionFor(TaskKind.Connect, healthy with { Queue = new(1722) }).Details.Contains("actual print RPC endpoint"));
         Check("Queue access denied is assigned to the host",
@@ -340,12 +356,28 @@ internal static class Checks
                 null, false, none) == Repair.None
             && SharedRepair.Next(TaskKind.Connect, target, hostReport with { Sharing = host with { Server = new(1, 4, 0) } },
                 null, false, none) == Repair.None);
-        Report servingOpen = hostReport with { Sharing = host with { Server = new(4, 2, 0), Firewall = new(4, 0) } };
+        var hostLink = link with { Session = new(0, 1, true), Health = link.Health! with { Categories = ["Private"] } };
+        Report servingOpen = hostReport with { Sharing = host with { Server = new(4, 2, 0), Firewall = new(2, 0) }, Connectivity = hostLink };
         Check("A host with Windows Firewall off is flagged before the RPC privacy override and repaired automatically",
             DecisionFor(TaskKind.Connect, servingOpen) is { Action: Repair.SecureHostSharing } firewallOff && firewallOff.Finding.Contains("Firewall is turned off")
             && SharedRepair.Next(TaskKind.Connect, target, servingOpen, null, false, none) == Repair.SecureHostSharing
             && SharedRepair.Next(TaskKind.Connect, target, servingOpen, null, false, new HashSet<Repair> { Repair.SecureHostSharing }) == Repair.None);
-        var hostLink = link with { Session = new(0, 1, true), Health = link.Health! with { Categories = ["Private"] } };
+        Check("Host sharing does not change the firewall or category with multiple or domain network profiles",
+            new[] { new[] { "Private", "Public" }, ["DomainAuthenticated"], [] }.All(categories =>
+                DecisionFor(TaskKind.Connect, servingOpen with
+                {
+                    Connectivity = hostLink with { Health = hostLink.Health! with { Categories = categories } }
+                }).Action == Repair.None));
+        Report secureHost = servingOpen with { Sharing = servingOpen.Sharing! with { Firewall = new(2, 2) } };
+        SharedRepairRun securedHostRun = SharedRepair.ExecuteAsync(TaskKind.Connect, target, servingOpen, null, false,
+            _ => Task.FromResult(new ActionResult("Windows confirmed the action.", Verified: true)),
+            () => Task.FromResult<Report?>(secureHost)).GetAwaiter().GetResult();
+        SharedRepairRun insecureHostRun = SharedRepair.ExecuteAsync(TaskKind.Connect, target, servingOpen, null, false,
+            _ => Task.FromResult(new ActionResult("Windows confirmed the action.", Verified: true)),
+            () => Task.FromResult<Report?>(servingOpen)).GetAwaiter().GetResult();
+        Check("Host sharing verifies that the active Private firewall is enabled",
+            securedHostRun.Steps is [{ Action: Repair.SecureHostSharing, StateMatches: true }]
+            && insecureHostRun.Steps is [{ Action: Repair.SecureHostSharing, StateMatches: false }]);
         Report serverOff = hostReport with { Sharing = host with { Server = new(4, 2, 0) },
             Connectivity = hostLink with { Health = hostLink.Health! with { Adapters = [new("Wi-Fi", true, false)] } } };
         Check("Host-side File and Printer Sharing binding, Public network and self-session failures are diagnosed",

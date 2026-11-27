@@ -21,7 +21,7 @@ internal static class HostSignIn
             1219 => new("Windows already has a session to this host with a different account. "
                 + "Disconnect the other connections to the host or sign out of Windows, then try again.", Code: code),
             86 or 1326 => new("The print host did not accept the user name or password.", Code: code),
-            1327 => new("Windows reported an account restriction. Use an authorized host account with a password.", Code: code),
+            1327 or 1385 => new("Windows restricted this account's network sign-in. Use an authorized host account with a password.", Code: code),
             1272 or Connectivity.GuestSigningRequired or Connectivity.GuestEncryptionRequired =>
                 new("Windows still received a guest session. Use an authorized account with a password and check the host's local account sharing policy.", Code: code),
             53 or 67 => new("Windows could not reach the print host to sign in.", Code: code),

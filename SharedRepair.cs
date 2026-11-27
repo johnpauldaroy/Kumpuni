@@ -262,7 +262,8 @@ internal static class SharedRepair
         Repair.RestoreRpcPrivacy => report.Sharing?.Privacy is { Error: 0 } privacy ? privacy.Value == 1 : null,
         Repair.EnableSmbClient => report.Connectivity?.Health is null ? null : !report.Connectivity.ClientBindingOff,
         Repair.EnableSmbServer => report.Connectivity?.Health is null ? null : !report.Connectivity.ServerBindingOff,
-        Repair.SecureHostSharing => report.Connectivity?.Health is null ? null : !report.Connectivity.PublicNetwork,
+        Repair.SecureHostSharing => report.Connectivity?.Health is null || report.Sharing?.Firewall is not FirewallReading firewall
+            ? null : report.Connectivity.Health.Categories is ["Private"] && firewall.ActiveProfiles == 2 && (firewall.EnabledLocally & 2) != 0,
         Repair.SignInToHost => report.Queue is { Code: 0 } || report.Connectivity?.Session is { Error: 0 } or { IpcError: 0 }
             ? true : report.Connectivity?.Session is { IpcError: int } ? false : null,
         Repair.Connect or Repair.Reconnect => report.Inventory is { InventoryError: 0 } inventory

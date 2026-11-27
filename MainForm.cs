@@ -454,8 +454,9 @@ internal sealed class MainForm : Form
     private bool ConfirmAutomaticRun(Target target, TaskKind task, bool localHost, bool restorePrivacy)
     {
         string scope = localHost
-            ? "Kumpuni can start an eligible stopped Print Spooler or Server service, turn on File and Printer Sharing for the active adapters, "
-                + "and set a Public network to Private with File and Printer Sharing allowed and Windows Firewall on. Windows may ask for administrator approval."
+            ? "Kumpuni can start an eligible stopped Print Spooler or Server service and turn on File and Printer Sharing for the active adapters. "
+                + "On a single active network it can enable Private printing rules and the firewall, then set that network to Private if needed. "
+                + "Continue only on a network you trust. Windows may ask for administrator approval."
             : "Kumpuni can start the local Print Spooler, turn on Client for Microsoft Networks, connect or reconnect this printer as the current user, and verify the result. "
                 + "Windows may ask you to sign in to the print host. Continue if you trust this print host.";
         if (!localHost && task == TaskKind.Default)
@@ -518,7 +519,7 @@ internal sealed class MainForm : Form
             Repair.StartSpooler => "Start the Print Spooler on this PC? Proceed only if printing is authorized on this device. Windows may ask for elevation.",
             Repair.EnableSmbClient => "Turn on Client for Microsoft Networks for the active network adapters? Windows asks for administrator approval.",
             Repair.EnableSmbServer => "Turn on File and Printer Sharing for Microsoft Networks for the active network adapters on this print host? Windows asks for administrator approval.",
-            Repair.SecureHostSharing => "Allow File and Printer Sharing on Private networks, set the current Public network to Private and turn Windows Firewall on for Private networks? "
+            Repair.SecureHostSharing => "Enable the required Private printing rules and firewall, then set the active network to Private if needed? "
                 + "Only continue on a network you trust, such as your office or home network. Windows asks for administrator approval.",
             Repair.SignInToHost => "Sign in to this print host through Windows and reconnect if needed? Use an account that has Print permission. "
                 + "Select Remember my credentials if Windows offers it. Windows handles the password.",

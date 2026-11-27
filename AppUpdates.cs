@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Reflection;
 using Velopack;
@@ -7,10 +8,12 @@ namespace Kumpuni;
 
 internal static class AppUpdates
 {
+    private const string UpdateLog = @"%LOCALAPPDATA%\velopack\velopack_Kumpuni.Desktop.log";
+
     public static void Attach(MainForm form)
     {
         // Keep the standalone executable usable and run updates as the regular Windows user.
-        if (!WebWorkspace.CanHost() || ReadFeed() is not IUpdateSource source)
+        if (!WebWorkspace.CanHost() || ReadFeed() is not IUpdateSource source || Environment.ProcessPath is not string executable)
             return;
 
         var manager = new UpdateManager(source);
@@ -20,8 +23,10 @@ internal static class AppUpdates
         using var running = Process.GetCurrentProcess();
         string processName = running.ProcessName;
         int processId = running.Id;
+        int sessionId = running.SessionId;
         string? offeredVersion = null;
         bool checking = false;
+        CancellationTokenSource? download = null;
         var timer = new System.Windows.Forms.Timer { Interval = (int)TimeSpan.FromHours(4).TotalMilliseconds };
         timer.Tick += async (_, _) => await CheckAsync();
         form.Shown += async (_, _) =>
@@ -29,7 +34,11 @@ internal static class AppUpdates
             timer.Start();
             await CheckAsync();
         };
-        form.FormClosed += (_, _) => timer.Dispose();
+        form.FormClosed += (_, _) =>
+        {
+            timer.Dispose();
+            download?.Cancel();
+        };
 
         async Task CheckAsync()
         {
@@ -57,13 +66,32 @@ internal static class AppUpdates
                 if (HasOtherInstance())
                 {
                     offeredVersion = null;
-                    MessageBox.Show(form, "Close other Kumpuni windows and reopen Kumpuni to update.", "Kumpuni update");
+                    MessageBox.Show(form, "Wait for checks from this installation to finish and close its other windows. Then reopen Kumpuni.", "Kumpuni update");
                     return;
                 }
 
                 try
                 {
-                    await manager.DownloadUpdatesAsync(update);
+                    string title = form.Text;
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+                    download = timeout;
+                    try
+                    {
+                        form.Text = $"Kumpuni | Downloading {version}";
+                        IProgress<int> progress = new Progress<int>(percent =>
+                        {
+                            if (!form.IsDisposed && download == timeout)
+                                form.Text = $"Kumpuni | Downloading {version} ({percent}%)";
+                        });
+                        await manager.DownloadUpdatesAsync(update, progress.Report, timeout.Token);
+                        timeout.Token.ThrowIfCancellationRequested();
+                    }
+                    finally
+                    {
+                        download = null;
+                        if (!form.IsDisposed)
+                            form.Text = title;
+                    }
                     if (form.IsDisposed)
                         return;
                     if (form.HasActiveWork || HasOtherInstance())
@@ -74,14 +102,19 @@ internal static class AppUpdates
                         return;
                     }
 
-                    manager.ApplyUpdatesAndRestart(update);
+                    manager.WaitExitThenApplyUpdates(update.TargetFullRelease);
+                    form.Close(); // Release the WinForms and WebView2 resources before Update.exe swaps the files.
                 }
                 catch (Exception error)
                 {
                     Trace.TraceWarning("Kumpuni update download or apply failed ({0}).", error.GetType().Name);
+                    offeredVersion = null;
                     if (!form.IsDisposed)
                     {
-                        MessageBox.Show(form, "Kumpuni could not install the update. Reopen Kumpuni to try again.",
+                        string problem = error is OperationCanceledException
+                            ? "The update download did not finish within five minutes."
+                            : "Kumpuni could not prepare the update.";
+                        MessageBox.Show(form, $"{problem} Reopen Kumpuni to retry.\n\nUpdate log\n{UpdateLog}",
                             "Kumpuni update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                 }
@@ -96,14 +129,31 @@ internal static class AppUpdates
         bool HasOtherInstance()
         {
             Process[] processes = Process.GetProcessesByName(processName);
-            try { return processes.Any(process => process.Id != processId); }
+            try { return processes.Any(process => process.Id != processId && BlocksUpdate(process)); }
             finally
             {
                 foreach (Process process in processes)
                     process.Dispose();
             }
         }
+
+        bool BlocksUpdate(Process process)
+        {
+            try
+            {
+                return IsInstallPeer(executable, process.MainModule?.FileName, process.SessionId == sessionId);
+            }
+            catch (InvalidOperationException) { return false; }
+            catch (Win32Exception)
+            {
+                try { return IsInstallPeer(executable, null, process.SessionId == sessionId); }
+                catch (Exception error) when (error is InvalidOperationException or Win32Exception) { return false; }
+            }
+        }
     }
+
+    internal static bool IsInstallPeer(string executable, string? candidate, bool sameSession) =>
+        candidate is null ? sameSession : string.Equals(executable, candidate, StringComparison.OrdinalIgnoreCase);
 
     private static IUpdateSource? ReadFeed()
     {

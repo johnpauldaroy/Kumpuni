@@ -113,14 +113,17 @@ internal static class Diagnose
                     $"Windows returned {CodeText(self.Error)} when listing this PC's own shares. "
                     + SecurityHint(report.Connectivity) + "Restart the PC and check again before changing other settings.");
             if (HostFirewallOff(host) || report.Connectivity is { PublicNetwork: true })
+            {
+                bool canRepair = report.Connectivity?.Health?.Categories is ["Private"] or ["Public"];
                 return new(report.Connectivity is { PublicNetwork: true }
                         ? "This print host is on a Public network." : "Windows Firewall is turned off on this print host.",
                     "Print host administrator",
-                    (report.Connectivity is { PublicNetwork: true } ? "Windows treats Public networks as untrusted and blocks printer sharing on them. " : "")
-                    + (HostFirewallOff(host) ? "Windows Firewall is off for the active network, which exposes this PC. " : "")
-                    + "Check and repair turns on the File and Printer Sharing rules for Private networks, sets this network to Private "
-                    + "and turns Windows Firewall back on for Private networks. Only do this on a network you trust.",
-                    Repair.SecureHostSharing);
+                    canRepair
+                        ? "Check and repair enables the required inbound printing rules and the firewall for Private networks, then sets the active network to Private if needed. "
+                            + "Only continue on a network you trust."
+                        : "Automatic repair requires one active Public or Private network profile. Ask the host administrator to review the active network and firewall policy.",
+                    canRepair ? Repair.SecureHostSharing : Repair.None);
+            }
             if (host.Privacy is { Value: 0, Error: 0 })
                 return new("The host has an explicit RPC privacy override.", "Print host administrator",
                     "Confirm the host and clients are updated. Select Restore RPC privacy to enforce it and schedule a restart of the Spooler or host.");
@@ -186,8 +189,8 @@ internal static class Diagnose
                     Repair.SignInToHost),
                 86 or 1326 or 1244 => new("Windows did not authenticate the print connection.", "Client user or print host operator",
                     "Sign in to the host with an authorized account through Windows and verify the queue's Print permission.", Repair.SignInToHost),
-                1219 => new("Windows reports a conflicting connection to the same host.", "Client user or IT",
-                    "Review existing Windows connections and use a consistent host identity. Other shares can depend on those sessions."),
+                1219 => SmbCredentialConflict(),
+                1327 or 1385 => SmbAccountRestricted(queue.Code),
                 6 => FrameworkDecision(report),
                 3 => new("Windows could not find the printer path on the host (0x00000003).", "Client user or print host operator",
                     "The host answered but did not return this printer. Confirm the share name on the host's Sharing tab, "
@@ -322,6 +325,10 @@ internal static class Diagnose
             return new("The host is reachable but does not publish a printer with this share name.", "Client user or print host operator",
                 $"Windows listed {listed.PrinterShares} shared printer(s) on the host. Use the exact share name from the host's Sharing tab or from net view.");
         int? signInError = link.Session?.IpcError ?? link.Session?.Error;
+        if (signInError == 1219)
+            return SmbCredentialConflict();
+        if (signInError is 1327 or 1385)
+            return SmbAccountRestricted(signInError.Value);
         if (signInError is 5 or 86 or 1326 or 1244 or 1907 or 1909 or 2242)
             return new("The host refused this PC's sign-in for file sharing.", "Client user or print host operator",
                 $"Windows returned {CodeText(signInError.Value)} when opening a session. Sign in to the print host with an account that has a password "
@@ -343,6 +350,16 @@ internal static class Diagnose
                 + (link.SmbClientEvents.Length > 0 ? $" Recent SMB client events: {string.Join(", ", link.SmbClientEvents)}." : ""));
         return null;
     }
+
+    private static Decision SmbCredentialConflict() => new(
+        "Windows reports a conflicting connection to the same host.", "Client user or IT",
+        "Windows returned error 1219. Close files and finish jobs using the host before disconnecting its existing Windows sessions. "
+        + "Then sign in with one account for the host.");
+
+    private static Decision SmbAccountRestricted(int code) => new(
+        "Windows restricted this account's network sign-in.", "Client user or print host administrator",
+        $"Windows returned {CodeText(code)}. Use a password-protected account authorized for network sign-in and Print permission on the host.",
+        Repair.SignInToHost);
 
     private static Decision FrameworkDecision(Report report) => new("Windows returned 0x00000006 for this shared queue.", "IT administrator",
         (report.Advanced?.Driver?.DriverModel == 3 ? "The queue uses a Type 3 driver. " : "")
