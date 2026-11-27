@@ -60,9 +60,11 @@ internal static class Checks
         bool success = advanced is { FirewallReadError: 0, FirewallRules: not null }
             && (advanced.Spool.FreeBytes is not null || advanced.Spool.VolumeError != 0)
             && (local is null || queue is { Jobs.Error: 0, Permissions.Error: 0 or 5 })
-            && inboxInf == 0 && invalidInf == 123;
+            && inboxInf == 0 && invalidInf == 123
+            && report?.Connectivity is { HealthError: 0, Health.Adapters.Length: > 0, Session: not null, PrintServerError: not null };
         return Program.Write(new
         {
+            report?.Connectivity,
             AdvancedAuditReturned = advanced is not null, advanced?.FirewallReadError, advanced?.FirewallRules,
             advanced?.Spool, advanced?.DiscoveryProvider, advanced?.DiscoveryPublication,
             LocalQueueRead = queue is not null, queue?.Permissions, queue?.Jobs,
@@ -166,6 +168,26 @@ internal static class Checks
                 && framework.Details.Contains("UNIDRV.DLL") && framework.Details.Contains("Do not copy")
             && DecisionFor(TaskKind.Connect, healthy with { Inventory = absent }, 6).Finding.Contains("0x00000006")
             && Diagnose.ParseReported("0x00000006") == 6);
+        var link = new ConnectivityEvidence(new(53, null, null), 1825, [new("IPv4", true, true)],
+            new NetworkHealth([new("Wi-Fi", true, true)], ["Public"], ["Windows Defender Firewall"], ["Windows Defender"]), 0, [30803]);
+        Report blockedSession = healthy with { Queue = new(3), Connectivity = link };
+        Check("An open port with a failing session is reported as a session failure, naming both Windows errors",
+            DecisionFor(TaskKind.Connect, blockedSession) is { Action: Repair.None } sessionFailure
+                && sessionFailure.Finding.Contains("cannot open a file-sharing session")
+                && sessionFailure.Details.Contains("(53)") && sessionFailure.Details.Contains("(1825)")
+                && sessionFailure.Details.Contains("30803") && !sessionFailure.Details.Contains("Security software"));
+        Check("Third-party security products are named; Microsoft Defender is not",
+            DecisionFor(TaskKind.Connect, blockedSession with { Connectivity = link with { Health = link.Health! with { AntivirusProducts = ["ESET Security"] } } })
+                .Details.Contains("ESET Security"));
+        Report clientOff = blockedSession with { Connectivity = link with { Health = link.Health! with { Adapters = [new("Wi-Fi", false, true)] } } };
+        Check("A disabled Client for Microsoft Networks is offered as an automatic repair",
+            DecisionFor(TaskKind.Connect, clientOff).Action == Repair.EnableSmbClient
+            && SharedRepair.Next(TaskKind.Connect, target, clientOff, null, false, new HashSet<Repair>()) == Repair.EnableSmbClient
+            && Diagnose.Elevated(Repair.EnableSmbClient) && !Diagnose.Elevated(Repair.SignInToHost));
+        Check("A listed host without the selected printer share and a refused sign-in get specific findings",
+            DecisionFor(TaskKind.Connect, blockedSession with { Connectivity = link with { Session = new(0, 2, false) } }).Finding.Contains("does not publish")
+            && DecisionFor(TaskKind.Connect, blockedSession with { Connectivity = link with { Session = new(1326, null, null) } }).Action == Repair.SignInToHost
+            && DecisionFor(TaskKind.Connect, healthy with { Queue = new(3) }).Finding.Contains("0x00000003"));
         Check("RPC 135 is not proof of print RPC",
             DecisionFor(TaskKind.Connect, healthy with { Queue = new(1722) }).Details.Contains("actual print RPC endpoint"));
         Check("Queue access denied is assigned to the host",
@@ -292,6 +314,21 @@ internal static class Checks
                 null, false, none) == Repair.None
             && SharedRepair.Next(TaskKind.Connect, target, hostReport with { Sharing = host with { Server = new(1, 4, 0) } },
                 null, false, none) == Repair.None);
+        Report servingOpen = hostReport with { Sharing = host with { Server = new(4, 2, 0), Firewall = new(4, 0) } };
+        Check("A host with Windows Firewall off is flagged before the RPC privacy override and repaired automatically",
+            DecisionFor(TaskKind.Connect, servingOpen) is { Action: Repair.SecureHostSharing } firewallOff && firewallOff.Finding.Contains("Firewall is turned off")
+            && SharedRepair.Next(TaskKind.Connect, target, servingOpen, null, false, none) == Repair.SecureHostSharing
+            && SharedRepair.Next(TaskKind.Connect, target, servingOpen, null, false, new HashSet<Repair> { Repair.SecureHostSharing }) == Repair.None);
+        var hostLink = link with { Session = new(0, 1, true), Health = link.Health! with { Categories = ["Private"] } };
+        Report serverOff = hostReport with { Sharing = host with { Server = new(4, 2, 0) },
+            Connectivity = hostLink with { Health = hostLink.Health! with { Adapters = [new("Wi-Fi", true, false)] } } };
+        Check("Host-side File and Printer Sharing binding, Public network and self-session failures are diagnosed",
+            DecisionFor(TaskKind.Connect, serverOff).Action == Repair.EnableSmbServer
+            && SharedRepair.Next(TaskKind.Connect, target, serverOff, null, false, none) == Repair.EnableSmbServer
+            && DecisionFor(TaskKind.Connect, serverOff with { Connectivity = hostLink with { Health = hostLink.Health! with { Categories = ["Public"] } } })
+                .Finding.Contains("Public network")
+            && DecisionFor(TaskKind.Connect, serverOff with { Connectivity = hostLink with { Session = new(53, null, null) } })
+                .Finding.Contains("to itself"));
         Report blockedByPolicy = hostReport with { Sharing = host with { RemoteSpooler = new(2) } };
         Check("The host client-connection policy blocks repairs and receives a specific finding",
             SharedRepair.Next(TaskKind.Connect, target, blockedByPolicy, null, true, none) == Repair.None
@@ -418,6 +455,25 @@ internal static class Checks
             && frameworkRows.Any(row => row is { Field: "Print framework PS5UI.DLL", Host: "Not installed" })
             && frameworkRows.Any(row => row is { Field: "Type 3 print framework files", Client: "Unknown" })
             && differences.Any(row => row is { Field: "Print framework UNIDRV.DLL", Client: "Not in report" }));
+        using var clientLink = JsonDocument.Parse("""
+            {"SchemaVersion":2,"Evidence":{"Sharing":{"LocalHost":false,"Firewall":{"ActiveProfiles":4,"EnabledLocally":0}},
+             "Connectivity":{"Session":{"Error":53},"PrintServerError":1825,"Health":{"Adapters":[{"Adapter":"Wi-Fi","Client":true,"Server":true}],
+             "Categories":["Public"],"FirewallProducts":[],"AntivirusProducts":["Windows Defender"]}}}}
+            """);
+        using var hostLinkJson = JsonDocument.Parse("""
+            {"SchemaVersion":2,"Evidence":{"Sharing":{"LocalHost":true,"Firewall":{"ActiveProfiles":2,"EnabledLocally":2}},
+             "Connectivity":{"Session":{"Error":0,"SharePublished":true},"PrintServerError":0,"Health":{"Adapters":[{"Adapter":"Ethernet","Client":true,"Server":false}],
+             "Categories":["Private"],"FirewallProducts":[],"AntivirusProducts":[]}}}}
+            """);
+        ReportDifference[] linkRows = SharingReportComparison.Compare(clientLink.RootElement, hostLinkJson.RootElement);
+        Check("Paired reports compare session, print server, network type, firewall, security products and bindings",
+            linkRows.Any(row => row is { Field: "File-sharing session", Client: "Error 53", Host: "Opened, share listed" })
+            && linkRows.Any(row => row is { Field: "Host print server (print RPC)", Client: "Error 1825", Host: "Opened" })
+            && linkRows.Any(row => row is { Field: "Network type", Client: "Public", Host: "Private" })
+            && linkRows.Any(row => row is { Field: "Windows Firewall on active network", Client: "Off", Host: "On" })
+            && linkRows.Any(row => row is { Field: "Security products", Client: "Windows Defender", Host: "None reported" })
+            && linkRows.Any(row => row is { Field: "File and Printer Sharing binding", Host: "Off on an active adapter" })
+            && differences.Any(row => row is { Field: "File-sharing session", Client: "Not in report" }));
         PrintFrameworkFile[] localFramework = SharingDiagnostics.ReadPrintFramework();
         Check("This PC's print framework files are read without errors other than missing files",
             localFramework.Length == SharingDiagnostics.FrameworkFiles.Length && localFramework.All(file => file.Error is 0 or 2));

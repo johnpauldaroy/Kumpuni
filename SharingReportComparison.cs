@@ -43,10 +43,56 @@ internal static class SharingReportComparison
             Row("Local driver matches", Number(client, "Advanced.Driver.MatchingDriverCount"), Number(host, "Advanced.Driver.MatchingDriverCount")),
             Row("Registered driver version", VersionText(client, "Advanced.Driver.Version"), VersionText(host, "Advanced.Driver.Version")),
             Row("Queue ACL entries", "Not applicable", Number(host, "Advanced.Queue.Permissions.AceCount")),
+            Row("File-sharing session", SessionText(client), SessionText(host)),
+            Row("Host print server (print RPC)", ErrorOrOk(client, "Connectivity.PrintServerError"), ErrorOrOk(host, "Connectivity.PrintServerError")),
+            Row("Network type", Joined(client, "Connectivity.Health.Categories"), Joined(host, "Connectivity.Health.Categories")),
+            Row("Windows Firewall on active network", FirewallOn(client), FirewallOn(host)),
+            Row("Security products", Products(client), Products(host)),
+            Row("Client for Microsoft Networks", Binding(client, "Client"), "Not applicable"),
+            Row("File and Printer Sharing binding", "Not applicable", Binding(host, "Server")),
             Row("Type 3 print framework files", FrameworkMatch(client, host), FrameworkMatch(client, host)),
             .. SharingDiagnostics.FrameworkFiles.Select(name =>
                 Row($"Print framework {name}", FrameworkVersion(client, name), FrameworkVersion(host, name)))
         ];
+    }
+
+    private static string SessionText(JsonElement item) => Integer(item, "Connectivity.Session.Error") switch
+    {
+        null => "Not in report",
+        0 => Element(item, "Connectivity.Session.SharePublished").ValueKind switch
+        {
+            JsonValueKind.True => "Opened, share listed", JsonValueKind.False => "Opened, share not listed", _ => "Opened"
+        },
+        int error => $"Error {error}"
+    };
+
+    private static string ErrorOrOk(JsonElement item, string path) => Integer(item, path) switch
+    {
+        null => "Not in report", 0 => "Opened", int error => $"Error {error}"
+    };
+
+    private static string[] Strings(JsonElement item, string path) => Element(item, path) is { ValueKind: JsonValueKind.Array } values
+        ? values.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.String).Select(value => value.GetString()!).ToArray() : [];
+
+    private static string Joined(JsonElement item, string path) =>
+        Element(item, path).ValueKind == JsonValueKind.Array ? Strings(item, path) is { Length: > 0 } values ? string.Join(", ", values) : "None" : "Not in report";
+
+    private static string Products(JsonElement item) =>
+        Element(item, "Connectivity.Health").ValueKind != JsonValueKind.Object ? "Not in report"
+        : Strings(item, "Connectivity.Health.FirewallProducts").Concat(Strings(item, "Connectivity.Health.AntivirusProducts")).Distinct().ToArray()
+            is { Length: > 0 } products ? string.Join(", ", products) : "None reported";
+
+    private static string FirewallOn(JsonElement item) =>
+        Integer(item, "Sharing.Firewall.ActiveProfiles") is int active && Integer(item, "Sharing.Firewall.EnabledLocally") is int enabled
+            ? (enabled & active) == active ? "On" : "Off" : "Unknown";
+
+    private static string Binding(JsonElement item, string field)
+    {
+        if (Element(item, "Connectivity.Health.Adapters") is not { ValueKind: JsonValueKind.Array } adapters)
+            return "Not in report";
+        JsonValueKind[] states = adapters.EnumerateArray().Select(adapter => Element(adapter, field).ValueKind).ToArray();
+        return states.Any(state => state == JsonValueKind.False) ? "Off on an active adapter"
+            : states.Any(state => state == JsonValueKind.True) ? "On" : "Unknown";
     }
 
     private static string FrameworkVersion(JsonElement item, string name)

@@ -5,7 +5,8 @@ using Microsoft.Win32;
 namespace Kumpuni;
 
 internal enum TaskKind { Connect, Default, Print }
-internal enum Repair { None, Connect, Reconnect, SetDefault, TestPage, StartSpooler, StartHostSpooler, StartLanmanServer, RestoreRpcPrivacy, SignInToHost }
+internal enum Repair { None, Connect, Reconnect, SetDefault, TestPage, StartSpooler, StartHostSpooler, StartLanmanServer, RestoreRpcPrivacy, SignInToHost,
+    EnableSmbClient, EnableSmbServer, SecureHostSharing }
 
 internal sealed record Target(string Host, string Share)
 {
@@ -62,7 +63,8 @@ internal sealed record PrintEvent(int Id, DateTime? Time, bool DriverRelated);
 internal sealed record PrintPolicy(bool? ProtectedPrintRequired, bool? DriverInstallationAdminOnly, string? RpcTransport);
 internal sealed record Report(Machine Machine, Inventory? Inventory, NetworkEvidence? Network,
     Observation? Queue, PrintEvent[] Events, bool EventsAvailable, string? UnavailableReason, PrintPolicy? Policy = null,
-    SharingEvidence? Sharing = null, AdvancedSharing? Advanced = null, Observation? CachedQueue = null);
+    SharingEvidence? Sharing = null, AdvancedSharing? Advanced = null, Observation? CachedQueue = null,
+    ConnectivityEvidence? Connectivity = null);
 internal sealed record Decision(string Finding, string Owner, string Details, Repair Action = Repair.None);
 internal sealed record ActionResult(string Message, bool Verified = false, int? Code = null, string? JobState = null);
 internal sealed record WorkerReply(Report? Report = null, Inventory? Inventory = null, ActionResult? Action = null,
@@ -71,6 +73,8 @@ internal sealed record WorkerReply(Report? Report = null, Inventory? Inventory =
 internal static class Diagnose
 {
     internal const int SecureSmbBuild = 26100;
+    internal static bool Elevated(Repair action) => action is Repair.StartSpooler or Repair.StartHostSpooler or Repair.StartLanmanServer
+        or Repair.RestoreRpcPrivacy or Repair.EnableSmbClient or Repair.EnableSmbServer or Repair.SecureHostSharing;
     internal const uint QueueNeedsAttention = 0x1 | 0x2 | 0x8 | 0x10 | 0x40 | 0x80 | 0x1000 | 0x100000;
 
     public static Decision Choose(TaskKind task, Target target, Report report, uint? reported)
@@ -100,6 +104,23 @@ internal static class Diagnose
             if (host.FirewallService.State == 1)
                 return new("The host Windows Defender Firewall service is stopped.", "Print host administrator",
                     "Verify the effective firewall policy and File and Printer Sharing rules for the affected client.");
+            if (report.Connectivity is { ServerBindingOff: true })
+                return new("File and Printer Sharing for Microsoft Networks is turned off on an active network adapter.", "Print host administrator",
+                    "Clients reach this PC but cannot open a sharing session. Check and repair turns it back on for the active adapters.",
+                    Repair.EnableSmbServer);
+            if (report.Connectivity?.Session is { Error: not 0 } self)
+                return new("This PC cannot open a file-sharing session to itself.", "Print host administrator",
+                    $"Windows returned {CodeText(self.Error)} when listing this PC's own shares. "
+                    + SecurityHint(report.Connectivity) + "Restart the PC and check again before changing other settings.");
+            if (HostFirewallOff(host) || report.Connectivity is { PublicNetwork: true })
+                return new(report.Connectivity is { PublicNetwork: true }
+                        ? "This print host is on a Public network." : "Windows Firewall is turned off on this print host.",
+                    "Print host administrator",
+                    (report.Connectivity is { PublicNetwork: true } ? "Windows treats Public networks as untrusted and blocks printer sharing on them. " : "")
+                    + (HostFirewallOff(host) ? "Windows Firewall is off for the active network, which exposes this PC. " : "")
+                    + "Check and repair turns on the File and Printer Sharing rules for Private networks, sets this network to Private "
+                    + "and turns Windows Firewall back on for Private networks. Only do this on a network you trust.",
+                    Repair.SecureHostSharing);
             if (host.Privacy is { Value: 0, Error: 0 })
                 return new("The host has an explicit RPC privacy override.", "Print host administrator",
                     "Confirm the host and clients are updated. Select Restore RPC privacy to enforce it and schedule a restart of the Spooler or host.");
@@ -134,6 +155,8 @@ internal static class Diagnose
 
         if (queue.Code != 0)
         {
+            if (report.Connectivity is ConnectivityEvidence link && SessionDecision(link, report) is Decision session)
+                return session;
             if (task == TaskKind.Connect && queue.Code == 1801
                 && report.Machine is { Build: 22000, Revision: 258 or 282 or 318 })
                 return new("The client matches a historical Windows 11 regression build.", "IT administrator",
@@ -161,6 +184,9 @@ internal static class Diagnose
                 1272 => new("Windows policy blocked a guest SMB connection.", "Print host administrator",
                     "Sign in to the print host with an account that has access to it, and verify SMB signing compatibility.", Repair.SignInToHost),
                 6 => FrameworkDecision(report),
+                3 => new("Windows could not find the printer path on the host (0x00000003).", "Client user or print host operator",
+                    "The host answered but did not return this printer. Confirm the share name on the host's Sharing tab, "
+                    + "and run Shared printer repair on the host with the same path to compare the reports."),
                 1722 or 1753 => new("The live print RPC probe failed.", "Print host or network administrator",
                     report.Network?.RpcMapper == true
                         ? "TCP 135 responded. Check the host spooler and the actual print RPC endpoint or configured port."
@@ -245,6 +271,40 @@ internal static class Diagnose
     }
 
     public static bool Same(string? left, string? right) => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+
+    internal static string CodeText(int code) => $"0x{unchecked((uint)code):X8} ({code})";
+
+    private static bool HostFirewallOff(SharingEvidence host) =>
+        host.Firewall is { ActiveProfiles: not 0 } firewall && (firewall.EnabledLocally & firewall.ActiveProfiles) != firewall.ActiveProfiles;
+
+    private static string SecurityHint(ConnectivityEvidence link) => link.ThirdPartySecurity is { Length: > 0 } products
+        ? $"Security software can block file sharing: {string.Join(", ", products)}. Allow file and printer sharing or mark this network as trusted in it. "
+        : "";
+
+    // Client-side findings from the session checks, ahead of the raw queue error.
+    private static Decision? SessionDecision(ConnectivityEvidence link, Report report)
+    {
+        if (link.ClientBindingOff)
+            return new("Client for Microsoft Networks is turned off on an active network adapter.", "Client administrator",
+                "Without it this PC cannot open file-sharing sessions to any host. Check and repair turns it back on.", Repair.EnableSmbClient);
+        if (link.Session is { Error: 0, SharePublished: false } listed)
+            return new("The host is reachable but does not publish a printer with this share name.", "Client user or print host operator",
+                $"Windows listed {listed.PrinterShares} shared printer(s) on the host. Use the exact share name from the host's Sharing tab or from net view.");
+        if (link.Session is { Error: 5 or 86 or 1326 or 1244 or 1272 or 1907 or 1909 or 2242 } denied)
+            return new("The host refused this PC's sign-in for file sharing.", "Client user or print host operator",
+                $"Windows returned {CodeText(denied.Error)} when opening a session. Sign in to the print host with an account that has a password "
+                + "and access to the printer. Windows keeps the credential.", Repair.SignInToHost);
+        bool portOpen = report.Network?.Smb == true || link.Addresses.Any(address => address.Smb);
+        if (link.Session is { Error: not 0 } failed && portOpen)
+            return new("The host answers on TCP 445 but Windows cannot open a file-sharing session.", "Print host administrator or IT",
+                $"Windows returned {CodeText(failed.Error)} when opening a session"
+                + (link.PrintServerError is int rpc and not 0 ? $", and {CodeText(rpc)} when opening the host's print server" : "") + ". "
+                + SecurityHint(link)
+                + "Run Shared printer repair on the print host with the same path. It checks File and Printer Sharing on its adapters, "
+                + "its network type and firewall, and whether it can open a session to itself."
+                + (link.SmbClientEvents.Length > 0 ? $" Recent SMB client events: {string.Join(", ", link.SmbClientEvents)}." : ""));
+        return null;
+    }
 
     private static Decision FrameworkDecision(Report report) => new("Windows returned 0x00000006 for this shared queue.", "IT administrator",
         (report.Advanced?.Driver?.DriverModel == 3 ? "The queue uses a Type 3 driver. " : "")

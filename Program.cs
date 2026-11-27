@@ -25,6 +25,9 @@ internal static class Program
             if (args is ["--host-repair", string hostPath, string hostVerb] && Target.Parse(hostPath) is Target host
                 && Enum.TryParse(hostVerb, out Repair hostAction))
                 return NativePrinting.ApplyHostRepair(host, hostAction);
+            if (args is ["--network-repair", string networkPath, string networkVerb] && Target.Parse(networkPath) is Target networkTarget
+                && Enum.TryParse(networkVerb, out Repair networkAction))
+                return Connectivity.ApplyNetworkRepair(networkTarget, networkAction);
             if (args is ["--stage-driver", string inf])
                 return DriverDeployment.Stage(inf);
             if (args is ["--technician-action", string selectedAction, ..] && Enum.TryParse(selectedAction, out TechnicianAction action))
@@ -110,7 +113,7 @@ internal static class Program
         {
             if (args[0] == "--technician-action")
                 return exception.HResult;
-            if (args[0] is "--start-spooler" or "--host-repair" or "--stage-driver")
+            if (args[0] is "--start-spooler" or "--host-repair" or "--network-repair" or "--stage-driver")
                 return 1;
             if (args[0] is "--repair" or "--console-test" or "--quick-default")
                 return Write(new WorkerReply(Action: new ActionResult(

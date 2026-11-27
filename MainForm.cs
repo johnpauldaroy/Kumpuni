@@ -452,8 +452,9 @@ internal sealed class MainForm : Form
     private bool ConfirmAutomaticRun(Target target, TaskKind task, bool localHost, bool restorePrivacy)
     {
         string scope = localHost
-            ? "Kumpuni can start an eligible stopped Print Spooler or Server service on this print host. Windows may ask for administrator approval."
-            : "Kumpuni can start the local Print Spooler, connect or reconnect this printer as the current user, and verify the result. "
+            ? "Kumpuni can start an eligible stopped Print Spooler or Server service, turn on File and Printer Sharing for the active adapters, "
+                + "and set a Public network to Private with File and Printer Sharing allowed and Windows Firewall on. Windows may ask for administrator approval."
+            : "Kumpuni can start the local Print Spooler, turn on Client for Microsoft Networks, connect or reconnect this printer as the current user, and verify the result. "
                 + "Windows may ask you to sign in to the print host. Continue if you trust this print host.";
         if (!localHost && task == TaskKind.Default)
             scope += " It may set this user's default printer.";
@@ -488,7 +489,7 @@ internal sealed class MainForm : Form
         {
             if (action == Repair.SignInToHost)
                 return HostSignIn.SignIn(target, Handle);
-            ActionResult? result = action is Repair.StartSpooler or Repair.StartHostSpooler or Repair.StartLanmanServer or Repair.RestoreRpcPrivacy
+            ActionResult? result = Diagnose.Elevated(action)
                 ? await Worker.RunElevatedRepairAsync(target, action)
                 : (await Worker.RunAsync("--repair", target.Path, action))?.Action;
             return result ?? new("The worker could not confirm the result. Check Windows before retrying.");
@@ -513,6 +514,10 @@ internal sealed class MainForm : Form
             Repair.SetDefault => "Set this queue as the default printer for the current Windows user?",
             Repair.TestPage => "Send one test page to the selected printer?",
             Repair.StartSpooler => "Start the Print Spooler on this PC? Proceed only if printing is authorized on this device. Windows may ask for elevation.",
+            Repair.EnableSmbClient => "Turn on Client for Microsoft Networks for the active network adapters? Windows asks for administrator approval.",
+            Repair.EnableSmbServer => "Turn on File and Printer Sharing for Microsoft Networks for the active network adapters on this print host? Windows asks for administrator approval.",
+            Repair.SecureHostSharing => "Allow File and Printer Sharing on Private networks, set the current Public network to Private and turn Windows Firewall on for Private networks? "
+                + "Only continue on a network you trust, such as your office or home network. Windows asks for administrator approval.",
             Repair.SignInToHost => "Sign in to this print host through Windows? Windows asks for an account that has access to the host. "
                 + "Select Remember my credentials to keep the sign-in. Kumpuni does not see or store the password.",
             _ => "Apply this repair?"
@@ -636,6 +641,7 @@ internal sealed class MainForm : Form
             .AppendLine($"TCP 135 (RPC endpoint mapper): {ProbeText(report.Network?.RpcMapper, "Reached", "Did not respond")}")
             .AppendLine($"TCP 445 (SMB): {ProbeText(report.Network?.Smb, "Reached", "Did not respond")}")
             .AppendLine($"Live Windows print queue: {QueueText(report)}");
+        AppendConnectivity(output, report.Connectivity);
 
         if (_reportedCode is uint reported)
             output.AppendLine($"Reported error: {_code.Text.Trim()} (normalized: 0x{reported:X8}, {reported})");
@@ -861,6 +867,42 @@ internal sealed class MainForm : Form
             : "Opened; queue properties unavailable";
     }
 
+    private static void AppendConnectivity(StringBuilder output, ConnectivityEvidence? link)
+    {
+        if (link is null)
+        {
+            output.AppendLine("Session checks: unavailable");
+            return;
+        }
+        foreach (AddressProbe address in link.Addresses)
+            output.AppendLine($"{address.Family}: TCP 445 {(address.Smb ? "reached" : "no response")}, TCP 135 {(address.RpcMapper ? "reached" : "no response")}");
+        output.AppendLine("File-sharing session (net view): " + (link.Session switch
+        {
+            null => "Unknown",
+            { Error: 0 } session => $"Opened, {session.PrinterShares} shared printer(s), selected share {(session.SharePublished == true ? "listed" : "not listed")}",
+            { Error: int error } => ErrorText(error)
+        }));
+        output.AppendLine("Host print server (print RPC): " + (link.PrintServerError switch
+        {
+            null => "Unknown", 0 => "Opened", int error => ErrorText(error)
+        }));
+        if (link.Health is NetworkHealth health)
+        {
+            output.AppendLine($"Network type: {(health.Categories.Length == 0 ? "Unknown" : string.Join(", ", health.Categories))}");
+            foreach (AdapterBinding adapter in health.Adapters)
+                output.AppendLine($"Adapter {adapter.Adapter}: Client for Microsoft Networks {OnOff(adapter.Client)}, File and Printer Sharing {OnOff(adapter.Server)}");
+            output.AppendLine($"Security products: {(health.FirewallProducts.Concat(health.AntivirusProducts).Distinct().ToArray() is { Length: > 0 } products ? string.Join(", ", products) : "None reported")}");
+        }
+        else
+        {
+            output.AppendLine($"Network adapters and security products: unavailable ({ErrorText(link.HealthError)})");
+        }
+        if (link.SmbClientEvents.Length > 0)
+            output.AppendLine($"SMB client events in the last 30 minutes: {string.Join(", ", link.SmbClientEvents)}");
+
+        static string OnOff(bool? value) => value switch { true => "on", false => "OFF", null => "not installed" };
+    }
+
     private static string PolicyText(bool? value) => value switch { true => "Yes", false => "No", null => "No setting found" };
     private static string ErrorText(int code) => $"0x{unchecked((uint)code):X8} ({code}) {new Win32Exception(code).Message}";
     private static string ProbeText(bool? outcome, string yes, string no) => outcome switch { true => yes, false => no, null => "Unknown" };
@@ -875,6 +917,9 @@ internal sealed class MainForm : Form
         Repair.StartLanmanServer => "Start Server service (LanmanServer)",
         Repair.RestoreRpcPrivacy => "Restore RPC privacy",
         Repair.SignInToHost => "Sign in to print host",
+        Repair.EnableSmbClient => "Turn on Client for Microsoft Networks",
+        Repair.EnableSmbServer => "Turn on File and Printer Sharing",
+        Repair.SecureHostSharing => "Set network to Private and turn on the firewall",
         _ => "Apply repair"
     };
 

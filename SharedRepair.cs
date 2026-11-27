@@ -187,7 +187,7 @@ internal static class SharedRepair
     private static object RedactedEvidence(Target target, Report report) => new
     {
         report.Machine, report.Network, report.Queue, report.Events, report.EventsAvailable, report.UnavailableReason,
-        report.Policy, report.Sharing, report.Advanced, report.CachedQueue,
+        report.Policy, report.Sharing, report.Advanced, report.CachedQueue, report.Connectivity,
         Inventory = report.Inventory is not Inventory inventory ? null : new
         {
             inventory.InventoryError, inventory.DefaultError, inventory.SpoolerState, inventory.SpoolerError, inventory.AutomaticStart,
@@ -210,6 +210,9 @@ internal static class SharedRepair
                 { Spooler: { State: 1, Start: 2, Error: 0 } } => Repair.StartHostSpooler,
                 { SharedQueuePresent: true, Server: { State: 1, Start: 2, Error: 0 } }
                     when SharingSettings.NamedPipesConfigured(host.RpcProtocols) => Repair.StartLanmanServer,
+                { SharedQueuePresent: true } when report.Connectivity is { ServerBindingOff: true } => Repair.EnableSmbServer,
+                { SharedQueuePresent: true } when Diagnose.Choose(task, target, report, reported).Action == Repair.SecureHostSharing
+                    => Repair.SecureHostSharing,
                 { SharedQueuePresent: true, Privacy: { Value: 0, Error: 0 } } when restorePrivacy => Repair.RestoreRpcPrivacy,
                 _ => Repair.None
             };
@@ -236,6 +239,9 @@ internal static class SharedRepair
         Repair.StartHostSpooler => report.Sharing?.Spooler.State is uint hostSpooler ? hostSpooler == 4 : null,
         Repair.StartLanmanServer => report.Sharing?.Server.State is uint server ? server == 4 : null,
         Repair.RestoreRpcPrivacy => report.Sharing?.Privacy is { Error: 0 } privacy ? privacy.Value == 1 : null,
+        Repair.EnableSmbClient => report.Connectivity?.Health is null ? null : !report.Connectivity.ClientBindingOff,
+        Repair.EnableSmbServer => report.Connectivity?.Health is null ? null : !report.Connectivity.ServerBindingOff,
+        Repair.SecureHostSharing => report.Connectivity?.Health is null ? null : !report.Connectivity.PublicNetwork,
         Repair.Connect or Repair.Reconnect => report.Inventory is { InventoryError: 0 } inventory
             ? inventory.Connections.Any(connection => Diagnose.Same(connection, target.Path)) : null,
         Repair.SetDefault => report.Inventory is { DefaultError: 0 } defaults ? Diagnose.Same(defaults.Default, target.Path) : null,

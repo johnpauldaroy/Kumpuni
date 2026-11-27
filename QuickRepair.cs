@@ -81,7 +81,7 @@ internal static class QuickRepair
         {
             if (action == Repair.SignInToHost)
                 return AttemptAsync(() => Task.FromResult(HostSignIn.SignIn(target, Form.ActiveForm?.Handle ?? IntPtr.Zero)));
-            return AttemptAsync(() => action is Repair.StartSpooler or Repair.StartHostSpooler or Repair.StartLanmanServer
+            return AttemptAsync(() => Diagnose.Elevated(action)
                 ? ApplyElevatedAsync(target, action) : ApplyWorkerAsync("--repair", target.Path, action));
         }
     }

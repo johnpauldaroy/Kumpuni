@@ -170,37 +170,15 @@ internal static class SharingDiagnostics
 
     private static async Task<(FirewallRules?, int)> ReadFirewallRulesAsync()
     {
-        var info = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe"))
-        {
-            CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true
-        };
-        foreach (string arg in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
-            Convert.ToBase64String(Encoding.Unicode.GetBytes(FirewallScript)) })
-            info.ArgumentList.Add(arg);
+        (string? json, int error) = await PowerShellJson.RunAsync(FirewallScript, TimeSpan.FromSeconds(5));
+        if (json is null)
+            return (null, error);
         try
         {
-            using Process? process = Process.Start(info);
-            if (process is null)
-                return (null, 13);
-            Task<string> output = process.StandardOutput.ReadToEndAsync();
-            Task<string> errors = process.StandardError.ReadToEndAsync();
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            try { await process.WaitForExitAsync(timeout.Token); }
-            catch (OperationCanceledException)
-            {
-                try { process.Kill(entireProcessTree: true); }
-                catch (InvalidOperationException) { }
-                return (null, 1460);
-            }
-            _ = await errors;
-            string json = await output;
-            if (process.ExitCode != 0)
-                return (null, process.ExitCode);
             FirewallRules? rules = JsonSerializer.Deserialize<FirewallRules>(json);
             return (rules, rules is null ? 13 : 0);
         }
-        catch (Win32Exception error) { return (null, error.NativeErrorCode); }
-        catch (Exception error) when (error is JsonException or InvalidOperationException or IOException) { return (null, 13); }
+        catch (JsonException) { return (null, 13); }
     }
 
     private const string FirewallScript = """

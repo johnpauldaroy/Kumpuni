@@ -50,9 +50,10 @@ internal static class Worker
 
     public static async Task<ActionResult> RunElevatedRepairAsync(Target target, Repair action)
     {
+        bool networkAction = action is Repair.EnableSmbClient or Repair.EnableSmbServer or Repair.SecureHostSharing;
         bool hostAction = action is Repair.StartHostSpooler or Repair.StartLanmanServer or Repair.RestoreRpcPrivacy;
-        ProcessStartInfo info = StartInfo(hostAction ? "--host-repair" : "--start-spooler");
-        if (hostAction)
+        ProcessStartInfo info = StartInfo(networkAction ? "--network-repair" : hostAction ? "--host-repair" : "--start-spooler");
+        if (hostAction || networkAction)
         {
             info.ArgumentList.Add(target.Path);
             info.ArgumentList.Add(action.ToString());
@@ -61,6 +62,9 @@ internal static class Worker
         {
             Repair.StartLanmanServer => "the Server service (LanmanServer)",
             Repair.RestoreRpcPrivacy => SharingSettings.PrivacyValue,
+            Repair.EnableSmbClient => "Client for Microsoft Networks",
+            Repair.EnableSmbServer => "File and Printer Sharing for Microsoft Networks",
+            Repair.SecureHostSharing => "the network type and Windows Firewall",
             _ => "the Print Spooler"
         };
         info.UseShellExecute = true;
@@ -73,9 +77,13 @@ internal static class Worker
             await process.WaitForExitAsync();
             if (process.ExitCode != 0)
                 return new($"Windows did not verify the requested change to {subject}.", Code: process.ExitCode);
-            return action == Repair.RestoreRpcPrivacy
-                ? new("Windows read back RpcAuthnLevelPrivacyEnabled = 1. Restart the Spooler or host during maintenance.", Verified: true)
-                : new($"Windows confirms {subject} is running.", Verified: true);
+            return action switch
+            {
+                Repair.RestoreRpcPrivacy => new("Windows read back RpcAuthnLevelPrivacyEnabled = 1. Restart the Spooler or host during maintenance.", Verified: true),
+                Repair.EnableSmbClient or Repair.EnableSmbServer => new($"Windows confirms {subject} is turned on for the active adapters.", Verified: true),
+                Repair.SecureHostSharing => new("Windows confirms the network is Private, File and Printer Sharing is allowed and the firewall is on.", Verified: true),
+                _ => new($"Windows confirms {subject} is running.", Verified: true)
+            };
         }
         catch (Win32Exception error) when (error.NativeErrorCode == 1223)
         {
@@ -92,11 +100,12 @@ internal static class Worker
         Task<(PrintEvent[] Events, bool Available)> events = Task.Run(() => ReadEvents(target.Path, target.Share, isShared: true));
         Task<Inventory> inventory = Task.Run(NativePrinting.ReadInventory);
         Task<SharingEvidence> sharing = Task.Run(() => SharingSettings.ReadAsync(target));
+        Task<ConnectivityEvidence> connectivity = Task.Run(() => Connectivity.CollectAsync(target));
 
         // Preserve the transport and service evidence when the Windows print probe stalls.
         Observation? live = await Task.WhenAny(queue, Task.Delay(TimeSpan.FromSeconds(10))) == queue && queue.IsCompletedSuccessfully
             ? (await queue).Observation() : null;
-        await Task.WhenAny(Task.WhenAll(events, inventory, sharing, advanced), Task.Delay(TimeSpan.FromSeconds(8)));
+        await Task.WhenAny(Task.WhenAll(events, inventory, sharing, advanced, connectivity), Task.Delay(TimeSpan.FromSeconds(10)));
         (PrintEvent[] Events, bool Available) printEvents = events.IsCompletedSuccessfully ? events.Result : ([], false);
         Inventory? current = inventory.IsCompletedSuccessfully ? inventory.Result : null;
         Observation? cached = null;
@@ -109,7 +118,8 @@ internal static class Worker
         }
         return new(machine, current, await network, live,
             printEvents.Events, printEvents.Available, live is null ? "Live queue probe timed out." : null, ReadPolicy(),
-            sharing.IsCompletedSuccessfully ? sharing.Result : null, advanced.IsCompletedSuccessfully ? advanced.Result : null, cached);
+            sharing.IsCompletedSuccessfully ? sharing.Result : null, advanced.IsCompletedSuccessfully ? advanced.Result : null, cached,
+            connectivity.IsCompletedSuccessfully ? connectivity.Result : null);
     }
 
     public static async Task<ConsoleSnapshot> ScanConsoleAsync()
