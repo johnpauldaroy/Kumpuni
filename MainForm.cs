@@ -17,6 +17,7 @@ internal sealed class MainForm : Form
         AutoSize = true, Text = "Restore RPC privacy if explicitly disabled (this print host only)"
     };
     private readonly Button _repair = MakeButton("Apply repair");
+    private readonly Button _createPrintingAccount = MakeButton("Create printing account");
     private readonly Button _settings = MakeButton("Windows printer settings");
     private readonly Button _stageDriver = MakeButton("Stage approved driver");
     private readonly Button _export = MakeButton("Export report");
@@ -119,7 +120,7 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Margin = new Padding(0, 8, 0, 10)
         };
         KumpuniTheme.StylePrimary(_automatic);
-        actions.Controls.AddRange([_automatic, _diagnose, _repair, _stageDriver, _settings, _export, _printed]);
+        actions.Controls.AddRange([_automatic, _diagnose, _repair, _createPrintingAccount, _stageDriver, _settings, _export, _printed]);
         root.Controls.Add(actions, 0, 2);
         root.Controls.Add(_results, 0, 3);
         root.Controls.Add(_status, 0, 4);
@@ -129,6 +130,7 @@ internal sealed class MainForm : Form
         _diagnose.Click += async (_, _) => await DiagnoseAsync(applyRepairs: false);
         _automatic.Click += async (_, _) => await DiagnoseAsync(applyRepairs: true);
         _repair.Click += async (_, _) => await RepairAsync();
+        _createPrintingAccount.Click += async (_, _) => await CreatePrintingAccountAsync();
         _stageDriver.Click += async (_, _) => await StageDriverAsync();
         _settings.Click += (_, _) => OpenSettings(_status);
         _export.Click += (_, _) => ExportReport();
@@ -293,7 +295,7 @@ internal sealed class MainForm : Form
         _ = _workspace.Handle;
         _workspace.SelectedTab = _sharedRepair;
         _path.Text = @"\\fixture.invalid\Printer";
-        if (!_automatic.Enabled || !_diagnose.Enabled || _restorePrivacy.Enabled || _repair.Enabled)
+        if (!_automatic.Enabled || !_diagnose.Enabled || _restorePrivacy.Enabled || _repair.Enabled || _createPrintingAccount.Visible)
             return false;
         _path.Text = @"\\localhost\Printer";
         if (!_restorePrivacy.Enabled)
@@ -518,8 +520,8 @@ internal sealed class MainForm : Form
             Repair.EnableSmbServer => "Turn on File and Printer Sharing for Microsoft Networks for the active network adapters on this print host? Windows asks for administrator approval.",
             Repair.SecureHostSharing => "Allow File and Printer Sharing on Private networks, set the current Public network to Private and turn Windows Firewall on for Private networks? "
                 + "Only continue on a network you trust, such as your office or home network. Windows asks for administrator approval.",
-            Repair.SignInToHost => "Sign in to this print host through Windows? Windows asks for an account that has access to the host. "
-                + "Select Remember my credentials to keep the sign-in. Kumpuni does not see or store the password.",
+            Repair.SignInToHost => "Sign in to this print host through Windows and reconnect if needed? Use an account that has Print permission. "
+                + "Select Remember my credentials if Windows offers it. Windows handles the password.",
             _ => "Apply this repair?"
         };
         if (MessageBox.Show(this, $"{_target.Path}\n\n{prompt}", ActionLabel(action),
@@ -531,7 +533,16 @@ internal sealed class MainForm : Form
         SetBusy(true, "Waiting for Windows to complete the selected action.");
         try
         {
-            _lastResult = await ExecuteActionAsync(_target, action);
+            if (action == Repair.SignInToHost && _report is Report first && _target is Target target)
+            {
+                _run = await SharedRepair.ExecuteAsync(TaskKind.Connect, target, first, _reportedCode, false,
+                    next => ExecuteActionAsync(target, next), () => ReadDiagnosisAsync(target));
+                _report = _run.Final ?? first;
+                _decision = Diagnose.Choose(_task, target, _report, _reportedCode);
+                _lastResult = _run.Steps.LastOrDefault()?.Result;
+            }
+            else
+                _lastResult = await ExecuteActionAsync(_target, action);
         }
         finally
         {
@@ -540,8 +551,42 @@ internal sealed class MainForm : Form
                 _waiting.Stop();
                 _mutating = false;
                 Render();
-                SetBusy(false, "Action finished. Diagnose again before applying another repair.");
+                SetBusy(false, action == Repair.SignInToHost && _run is not null
+                    ? _run.Summary : "Action finished. Diagnose again before applying another repair.");
             }
+        }
+    }
+
+    private async Task CreatePrintingAccountAsync()
+    {
+        if (_busy || _target is not Target target || !PrintingAccount.CanCreate(_report))
+            return;
+        string account = $@"{Environment.MachineName}\{PrintingAccount.Name}";
+        if (MessageBox.Show(this, $"Create the standard local account {account} on this print host? "
+            + "Windows asks for administrator approval and opens a console where you enter a new, nonblank password twice. "
+            + "The account needs Print permission on the selected queue.",
+            "Create printing account", MessageBoxButtons.OKCancel, MessageBoxIcon.Question,
+            MessageBoxDefaultButton.Button2) != DialogResult.OK)
+            return;
+
+        _mutating = true;
+        SetBusy(true, "Waiting for Windows to finish account setup.");
+        try
+        {
+            ActionResult result = await PrintingAccount.CreateAsync(target);
+            if (IsDisposed)
+                return;
+            string details = result.Verified
+                ? $"\n\nOn the client, open Kumpuni and sign in as {account}. If access is denied, check Print permission on the host's printer Security tab."
+                : result.Code is int code ? $"\n\nWindows result: {code}." : "";
+            MessageBox.Show(this, result.Message + details, "Create printing account", MessageBoxButtons.OK,
+                result.Verified ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _mutating = false;
+            if (!IsDisposed)
+                SetBusy(false, "Account setup finished.");
         }
     }
 
@@ -693,6 +738,13 @@ internal sealed class MainForm : Form
         output.AppendLine(sharing.LocalHost ? "The selected host is this PC." : "Run this check on the print host to inspect its settings.");
         if (sharing.LocalHost)
             output.AppendLine($"Local printer share: {ProbeText(sharing.SharedQueuePresent, "Published", "Not found")}");
+        if (sharing.LocalAccountModel is RegistrySetting model)
+            output.AppendLine("Local network account sharing: " + (model switch
+            {
+                { Error: 0, Value: 1 } => "Guest only",
+                { Error: 0, Value: 0 } => "Classic",
+                _ => SettingText(model)
+            }));
         output.AppendLine($"LanmanServer: {ServiceText(sharing.Server)}")
             .AppendLine($"Windows Defender Firewall service: {ServiceText(sharing.FirewallService)}");
         if (sharing.Firewall is FirewallReading firewall)
@@ -833,6 +885,8 @@ internal sealed class MainForm : Form
         _restorePrivacy.Enabled = !_busy && Target.Parse(_path.Text) is Target target && SharingSettings.IsLocalHost(target);
         _repair.Enabled = !_busy && _decision is { Action: not Repair.None } && _lastResult is null;
         _repair.Text = _decision is null ? "Apply repair" : ActionLabel(_decision.Action);
+        _createPrintingAccount.Visible = PrintingAccount.CanCreate(_report);
+        _createPrintingAccount.Enabled = !_busy;
         _export.Enabled = !_busy && _report is not null;
         _stageDriver.Enabled = !_busy && _report is not null && _report.Policy?.ProtectedPrintRequired != true;
         _printed.Visible = !_busy && !_pageConfirmed && _lastResult is { Verified: true, JobState: not null };
@@ -882,12 +936,17 @@ internal sealed class MainForm : Form
             { Error: 0 } session => $"Opened, {session.PrinterShares} shared printer(s), selected share {(session.SharePublished == true ? "listed" : "not listed")}",
             { Error: int error } => ErrorText(error)
         }));
+        if (link.Session?.IpcError is int ipc)
+            output.AppendLine("SMB IPC$ sign-in: " + (ipc == 0 ? "Opened" : ErrorText(ipc)));
         output.AppendLine("Host print server (print RPC): " + (link.PrintServerError switch
         {
             null => "Unknown", 0 => "Opened", int error => ErrorText(error)
         }));
         if (link.Health is NetworkHealth health)
         {
+            if (health.SmbClient is SmbClientSettings smb)
+                output.AppendLine($"SMB client ({(smb.RegistryOnly ? "registry overrides" : "effective settings")}): signing required {PolicyText(smb.RequireSecuritySignature)}, "
+                    + $"insecure guest logons allowed {PolicyText(smb.EnableInsecureGuestLogons)}, encryption required {PolicyText(smb.RequireEncryption)}");
             output.AppendLine($"Network type: {(health.Categories.Length == 0 ? "Unknown" : string.Join(", ", health.Categories))}");
             foreach (AdapterBinding adapter in health.Adapters)
                 output.AppendLine($"Adapter {adapter.Adapter}: Client for Microsoft Networks {OnOff(adapter.Client)}, File and Printer Sharing {OnOff(adapter.Server)}");

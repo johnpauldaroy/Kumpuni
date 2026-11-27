@@ -13,10 +13,13 @@ namespace Kumpuni;
 
 // Session-level evidence between this PC and the print host. TCP probes only prove a port answers;
 // these checks show whether Windows can open a file-sharing session and talk to the host's print server.
-internal sealed record SmbSessionCheck(int Error, int? PrinterShares, bool? SharePublished);
+internal sealed record SmbSessionCheck(int Error, int? PrinterShares, bool? SharePublished, int? IpcError = null);
 internal sealed record AddressProbe(string Family, bool Smb, bool RpcMapper);
 internal sealed record AdapterBinding(string Adapter, bool? Client, bool? Server);
-internal sealed record NetworkHealth(AdapterBinding[] Adapters, string[] Categories, string[] FirewallProducts, string[] AntivirusProducts);
+internal sealed record SmbClientSettings(bool? RequireSecuritySignature, bool? EnableInsecureGuestLogons, bool? RequireEncryption,
+    bool RegistryOnly = false);
+internal sealed record NetworkHealth(AdapterBinding[] Adapters, string[] Categories, string[] FirewallProducts, string[] AntivirusProducts,
+    SmbClientSettings? SmbClient = null);
 internal sealed record ConnectivityEvidence(SmbSessionCheck? Session, int? PrintServerError, AddressProbe[] Addresses,
     NetworkHealth? Health, int HealthError, int[] SmbClientEvents)
 {
@@ -33,6 +36,10 @@ internal static class Connectivity
 {
     private static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(8);
     private const int SessionTimedOut = 1460;
+    internal const int GuestSigningRequired = unchecked((int)0xC05D0003);
+    internal const int GuestEncryptionRequired = unchecked((int)0xC05D0004);
+    internal const int NoSigningAlgorithm = unchecked((int)0xC05D0002);
+    internal const int InvalidSignature = unchecked((int)0xC000A000);
 
     public static async Task<ConnectivityEvidence> CollectAsync(Target target)
     {
@@ -57,7 +64,8 @@ internal static class Connectivity
         try
         {
             if (code is not (0 or 234) || buffer == IntPtr.Zero)
-                return new(code, null, null);
+                return new(code, null, null, (code is 5 or 53 or 67) && !SharingSettings.IsLocalHost(target)
+                    ? ProbeIpc(target.Host) : null);
             int printers = 0;
             bool published = false;
             int stride = Marshal.SizeOf<ShareInfo1>();
@@ -76,6 +84,26 @@ internal static class Connectivity
             if (buffer != IntPtr.Zero)
                 NetApiBufferFree(buffer);
         }
+    }
+
+    // NetShareEnum can mask SMB authentication failures as ERROR_BAD_NETPATH. Ask the
+    // SMB redirector to open IPC$ directly with the current user's credentials, as net use does.
+    private static int? ProbeIpc(string host)
+    {
+        string path = $@"\\{host}\IPC$";
+        int existing = NetUseGetInfo(null, path, 0, out IntPtr buffer);
+        if (buffer != IntPtr.Zero)
+            NetApiBufferFree(buffer);
+        const int useNotFound = 2250;
+        if (existing != useNotFound)
+            return null;
+
+        const int useWildcard = -1;
+        var use = new UseInfo1 { Remote = path, AssignmentType = useWildcard };
+        int code = NetUseAdd(null, 1, in use, out _);
+        if (code == 0)
+            NetUseDel(null, path, 0); // Release only the connection added here, without forcing open handles closed.
+        return code;
     }
 
     // Equivalent of "Get-Printer -ComputerName HOST": opens the host's print server over print RPC.
@@ -135,7 +163,8 @@ internal static class Connectivity
             return health is null ? (null, 13) : (health with
             {
                 Adapters = health.Adapters ?? [], Categories = health.Categories ?? [],
-                FirewallProducts = health.FirewallProducts ?? [], AntivirusProducts = health.AntivirusProducts ?? []
+                FirewallProducts = health.FirewallProducts ?? [], AntivirusProducts = health.AntivirusProducts ?? [],
+                SmbClient = health.SmbClient ?? SharingSettings.ReadConfiguredSmbClient()
             }, 0);
         }
         catch (JsonException) { return (null, 13); }
@@ -220,6 +249,13 @@ internal static class Connectivity
         $result.Categories = @(Get-NetConnectionProfile | ForEach-Object { [string]$_.NetworkCategory })
         try { $result.FirewallProducts = @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName FirewallProduct | ForEach-Object { [string]$_.displayName }) } catch { }
         try { $result.AntivirusProducts = @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct | ForEach-Object { [string]$_.displayName }) } catch { }
+        try {
+            $client = Get-SmbClientConfiguration
+            $result.SmbClient = @{
+                RequireSecuritySignature = $client.RequireSecuritySignature
+                EnableInsecureGuestLogons = $client.EnableInsecureGuestLogons
+                RequireEncryption = $client.RequireEncryption }
+        } catch { }
         $result | ConvertTo-Json -Compress -Depth 4
         """;
 
@@ -231,6 +267,13 @@ internal static class Connectivity
         public string Remark;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct UseInfo1
+    {
+        public string? Local, Remote, Password;
+        public int Status, AssignmentType, ReferenceCount, UseCount;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct PrinterDefaults { public IntPtr DataType, DevMode; public uint DesiredAccess; }
 
@@ -239,6 +282,12 @@ internal static class Connectivity
         out int entriesRead, out int totalEntries, ref int resume);
     [DllImport("netapi32.dll", ExactSpelling = true)]
     private static extern int NetApiBufferFree(IntPtr buffer);
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int NetUseGetInfo(string? server, string useName, int level, out IntPtr buffer);
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int NetUseAdd(string? server, int level, in UseInfo1 use, out int parameterError);
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int NetUseDel(string? server, string useName, int force);
     [DllImport("winspool.drv", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     private static extern bool OpenPrinterW(string name, out IntPtr handle, in PrinterDefaults defaults);
     [DllImport("winspool.drv", ExactSpelling = true)]

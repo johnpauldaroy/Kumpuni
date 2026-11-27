@@ -133,6 +133,10 @@ internal static class Diagnose
             if (report.Advanced?.Queue?.Jobs is { Error: 0, Blocked: > 0 })
                 return new("Windows reports blocked jobs in the selected queue.", "Print host administrator",
                     "Inspect the printer and selected jobs in Windows before retrying or clearing a job.");
+            if (host.LocalAccountModel is { Value: 1, Error: 0 })
+                return new("This print host maps local network sign-ins to Guest.", "Print host administrator",
+                    "Windows cannot sign a guest SMB session. Ask the host administrator to review the Network access: Sharing and security "
+                    + "model for local accounts policy before creating a local printing account.");
             return new("The selected share is published on this host.", "Print host administrator",
                 "Compare this report with Check and repair on the affected client to verify its access, drivers and network path.");
         }
@@ -148,6 +152,9 @@ internal static class Diagnose
         if (report.Network?.NameResolved == false && (queue is null or { Code: 53 or 67 or 1722 or 1753 }))
             return new("The print host name did not resolve.", "Client user or network administrator",
                 "Confirm the Windows host name and network connection. Prefer the approved DNS name.");
+
+        if (queue?.Code != 0 && SmbSecurityDecision(report, reported) is Decision smbSecurity)
+            return smbSecurity;
 
         if (queue is null)
             return new("The live queue check did not complete.", "Client user or IT",
@@ -181,8 +188,6 @@ internal static class Diagnose
                     "Sign in to the host with an authorized account through Windows and verify the queue's Print permission.", Repair.SignInToHost),
                 1219 => new("Windows reports a conflicting connection to the same host.", "Client user or IT",
                     "Review existing Windows connections and use a consistent host identity. Other shares can depend on those sessions."),
-                1272 => new("Windows policy blocked a guest SMB connection.", "Print host administrator",
-                    "Sign in to the print host with an account that has access to it, and verify SMB signing compatibility.", Repair.SignInToHost),
                 6 => FrameworkDecision(report),
                 3 => new("Windows could not find the printer path on the host (0x00000003).", "Client user or print host operator",
                     "The host answered but did not return this printer. Confirm the share name on the host's Sharing tab, "
@@ -274,6 +279,32 @@ internal static class Diagnose
 
     internal static string CodeText(int code) => $"0x{unchecked((uint)code):X8} ({code})";
 
+    private static Decision? SmbSecurityDecision(Report report, uint? reported)
+    {
+        SmbSessionCheck? session = report.Connectivity?.Session;
+        // Prefer a live SMB result. A reported error can fill the gap when Windows only returns a generic path error.
+        bool sessionOpened = session is { Error: 0 } or { IpcError: 0 };
+        int? code = new int?[] { session?.IpcError, session?.Error, report.Queue?.Code,
+            !sessionOpened && reported is uint value ? unchecked((int)value) : null }.FirstOrDefault(error =>
+            error is Connectivity.GuestSigningRequired or Connectivity.GuestEncryptionRequired or 1272
+                or Connectivity.InvalidSignature or Connectivity.NoSigningAlgorithm);
+        return code switch
+        {
+            Connectivity.GuestSigningRequired => GuestBlocked("SMB signing is required and Windows rejected the guest session.", code.Value),
+            Connectivity.GuestEncryptionRequired => GuestBlocked("SMB encryption is required and Windows rejected the guest session.", code.Value),
+            1272 => GuestBlocked("Windows policy blocked a guest SMB connection.", code.Value),
+            Connectivity.InvalidSignature or Connectivity.NoSigningAlgorithm => new(
+                "Windows could not establish a signed SMB connection.", "Print host or client administrator",
+                $"Windows returned {CodeText(code.Value)}. Check SMB signing compatibility on the approved print host."),
+            _ => null
+        };
+
+        static Decision GuestBlocked(string finding, int code) => new(finding, "Client user or print host administrator",
+            $"Windows returned {CodeText(code)}. Sign in with a password-protected account that has Print permission on the host. "
+            + "In Windows, select Remember my credentials if available. Kumpuni checks the queue again after sign-in.",
+            Repair.SignInToHost);
+    }
+
     private static bool HostFirewallOff(SharingEvidence host) =>
         host.Firewall is { ActiveProfiles: not 0 } firewall && (firewall.EnabledLocally & firewall.ActiveProfiles) != firewall.ActiveProfiles;
 
@@ -290,14 +321,21 @@ internal static class Diagnose
         if (link.Session is { Error: 0, SharePublished: false } listed)
             return new("The host is reachable but does not publish a printer with this share name.", "Client user or print host operator",
                 $"Windows listed {listed.PrinterShares} shared printer(s) on the host. Use the exact share name from the host's Sharing tab or from net view.");
-        if (link.Session is { Error: 5 or 86 or 1326 or 1244 or 1272 or 1907 or 1909 or 2242 } denied)
+        int? signInError = link.Session?.IpcError ?? link.Session?.Error;
+        if (signInError is 5 or 86 or 1326 or 1244 or 1907 or 1909 or 2242)
             return new("The host refused this PC's sign-in for file sharing.", "Client user or print host operator",
-                $"Windows returned {CodeText(denied.Error)} when opening a session. Sign in to the print host with an account that has a password "
-                + "and access to the printer. Windows keeps the credential.", Repair.SignInToHost);
+                $"Windows returned {CodeText(signInError.Value)} when opening a session. Sign in to the print host with an account that has a password "
+                + "and access to the printer.", Repair.SignInToHost);
         bool portOpen = report.Network?.Smb == true || link.Addresses.Any(address => address.Smb);
-        if (link.Session is { Error: not 0 } failed && portOpen)
+        if (portOpen && link.Session is { Error: 53, IpcError: null or 53 }
+            && link.Health?.SmbClient is { EnableInsecureGuestLogons: true, RequireSecuritySignature: not false })
+            return new("SMB could not connect to the print host.", "Client user or print host administrator",
+                "Windows returned error 53. If the host offered guest access, signing or guest restrictions can block it. "
+                + "Try a password-protected host account with Print permission, then check the connection again.", Repair.SignInToHost);
+        if (link.Session is { Error: not 0, IpcError: not 0 } failed && portOpen)
             return new("The host answers on TCP 445 but Windows cannot open a file-sharing session.", "Print host administrator or IT",
                 $"Windows returned {CodeText(failed.Error)} when opening a session"
+                + (failed.IpcError is int ipc && ipc != failed.Error ? $", {CodeText(ipc)} when connecting to IPC$" : "")
                 + (link.PrintServerError is int rpc and not 0 ? $", and {CodeText(rpc)} when opening the host's print server" : "") + ". "
                 + SecurityHint(link)
                 + "Run Shared printer repair on the print host with the same path. It checks File and Printer Sharing on its adapters, "

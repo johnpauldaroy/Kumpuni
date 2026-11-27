@@ -44,6 +44,16 @@ internal static class SharingReportComparison
             Row("Registered driver version", VersionText(client, "Advanced.Driver.Version"), VersionText(host, "Advanced.Driver.Version")),
             Row("Queue ACL entries", "Not applicable", Number(host, "Advanced.Queue.Permissions.AceCount")),
             Row("File-sharing session", SessionText(client), SessionText(host)),
+            Row("SMB IPC$ sign-in", ErrorOrOk(client, "Connectivity.Session.IpcError"), ErrorOrOk(host, "Connectivity.Session.IpcError")),
+            Row("SMB client settings source", Element(client, "Connectivity.Health.SmbClient.RegistryOnly").ValueKind switch
+            {
+                JsonValueKind.True => "Registry overrides", JsonValueKind.False => "Effective settings", _ => "Unknown"
+            }, "Not applicable"),
+            Row("SMB client requires signing", Boolean(client, "Connectivity.Health.SmbClient.RequireSecuritySignature"), "Not applicable"),
+            Row("SMB client allows insecure guest access", Boolean(client, "Connectivity.Health.SmbClient.EnableInsecureGuestLogons"), "Not applicable"),
+            Row("SMB client requires encryption", Boolean(client, "Connectivity.Health.SmbClient.RequireEncryption"), "Not applicable"),
+            Row("Host local account sharing", "Not applicable", Integer(host, "Sharing.LocalAccountModel.Error") == 0
+                ? Integer(host, "Sharing.LocalAccountModel.Value") switch { 1 => "Guest only", 0 => "Classic", _ => "Default" } : "Unknown"),
             Row("Host print server (print RPC)", ErrorOrOk(client, "Connectivity.PrintServerError"), ErrorOrOk(host, "Connectivity.PrintServerError")),
             Row("Network type", Joined(client, "Connectivity.Health.Categories"), Joined(host, "Connectivity.Health.Categories")),
             Row("Windows Firewall on active network", FirewallOn(client), FirewallOn(host)),
@@ -68,7 +78,7 @@ internal static class SharingReportComparison
 
     private static string ErrorOrOk(JsonElement item, string path) => Integer(item, path) switch
     {
-        null => "Not in report", 0 => "Opened", int error => $"Error {error}"
+        null => "Not in report", 0 => "Opened", int error when error < 0 => Diagnose.CodeText(error), int error => $"Error {error}"
     };
 
     private static string[] Strings(JsonElement item, string path) => Element(item, path) is { ValueKind: JsonValueKind.Array } values

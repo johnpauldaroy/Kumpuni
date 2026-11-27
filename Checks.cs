@@ -188,6 +188,32 @@ internal static class Checks
             DecisionFor(TaskKind.Connect, blockedSession with { Connectivity = link with { Session = new(0, 2, false) } }).Finding.Contains("does not publish")
             && DecisionFor(TaskKind.Connect, blockedSession with { Connectivity = link with { Session = new(1326, null, null) } }).Action == Repair.SignInToHost
             && DecisionFor(TaskKind.Connect, healthy with { Queue = new(3) }).Finding.Contains("0x00000003"));
+        Report signingBlocked = blockedSession with
+        {
+            Inventory = absent,
+            Connectivity = link with { Session = link.Session! with { IpcError = Connectivity.GuestSigningRequired } }
+        };
+        Check("The IPC$ probe distinguishes guest-signing rejection from an invalid signature",
+            DecisionFor(TaskKind.Connect, signingBlocked) is { Action: Repair.SignInToHost } guestSigning
+            && guestSigning.Finding.Contains("rejected the guest session") && guestSigning.Details.Contains("0xC05D0003")
+            && DecisionFor(TaskKind.Connect, blockedSession with
+            {
+                Connectivity = link with { Session = link.Session! with { IpcError = Connectivity.InvalidSignature } }
+            }) is { Action: Repair.None } invalidSignature && invalidSignature.Details.Contains("0xC000A000")
+            && DecisionFor(TaskKind.Connect, blockedSession with
+            {
+                Connectivity = link with { Session = link.Session! with { IpcError = Connectivity.GuestEncryptionRequired } }
+            }) is { Action: Repair.SignInToHost } guestEncryption && guestEncryption.Finding.Contains("encryption")
+            && DecisionFor(TaskKind.Connect, blockedSession, Diagnose.ParseReported("3227320323")).Action == Repair.SignInToHost);
+        Check("SMB settings suggest sign-in for error 53 without treating the policy alone as guest evidence",
+            DecisionFor(TaskKind.Connect, blockedSession with
+            {
+                Connectivity = link with { Health = link.Health! with { SmbClient = new(true, true, null) } }
+            }) is { Action: Repair.SignInToHost } ambiguous && ambiguous.Details.Contains("If the host offered guest access")
+            && DecisionFor(TaskKind.Connect, blockedSession with
+            {
+                Connectivity = link with { Session = link.Session! with { IpcError = 0 } }
+            }, 0xC05D0003).Action == Repair.None);
         Check("RPC 135 is not proof of print RPC",
             DecisionFor(TaskKind.Connect, healthy with { Queue = new(1722) }).Details.Contains("actual print RPC endpoint"));
         Check("Queue access denied is assigned to the host",
@@ -334,6 +360,15 @@ internal static class Checks
             SharedRepair.Next(TaskKind.Connect, target, blockedByPolicy, null, true, none) == Repair.None
             && DecisionFor(TaskKind.Connect, blockedByPolicy).Finding.Contains("policy blocks", StringComparison.Ordinal));
         Report servingHost = hostReport with { Sharing = host with { Server = new(4, 2, 0) } };
+        Report accountHost = servingHost with { Sharing = servingHost.Sharing! with { Privacy = new(1), LocalAccountModel = new(0) } };
+        Report guestOnlyHost = accountHost with { Sharing = accountHost.Sharing! with { LocalAccountModel = new(1) } };
+        Check("Printing account creation is optional and limited to a publishing workstation with authenticated local access",
+            PrintingAccount.CanCreate(accountHost) && !PrintingAccount.CanCreate(guestOnlyHost)
+            && !PrintingAccount.CanCreate(accountHost with { Machine = machine with { Workstation = false } })
+            && !PrintingAccount.CanCreate(blockedSession)
+            && PrintingAccount.CreateAsync(new("fixture.invalid", "Printer")).GetAwaiter().GetResult() is { Verified: false, Code: 87 }
+            && SharedRepair.Next(TaskKind.Connect, target, accountHost, null, false, none) == Repair.None
+            && DecisionFor(TaskKind.Connect, guestOnlyHost).Finding.Contains("maps local network sign-ins to Guest"));
         Check("RPC privacy repair requires explicit consent, local published share and a disabled DWORD",
             SharedRepair.Next(TaskKind.Connect, target, servingHost, null, false, none) == Repair.None
             && SharedRepair.Next(TaskKind.Connect, target, servingHost, null, true, none) == Repair.RestoreRpcPrivacy
@@ -345,6 +380,17 @@ internal static class Checks
             && SharedRepair.Next(TaskKind.Connect, target, healthy, 283, false, none) == Repair.None);
         Report before = healthy with { Inventory = absent };
         Report after = healthy with { Inventory = connected with { Default = target.Path } };
+        var signInSnapshots = new Queue<Report?>([before with { Connectivity = link with { Session = new(0, 2, true) } }, after]);
+        SharedRepairRun signInRun = SharedRepair.ExecuteAsync(TaskKind.Connect, target, signingBlocked, null, false,
+            _ => Task.FromResult(new ActionResult("Windows confirmed the action.", Verified: true)),
+            () => Task.FromResult(signInSnapshots.Dequeue())).GetAwaiter().GetResult();
+        SharedRepairRun unconfirmedSignIn = SharedRepair.ExecuteAsync(TaskKind.Connect, target, signingBlocked, null, false,
+            _ => Task.FromResult(new ActionResult("Windows confirmed the action.", Verified: true)),
+            () => Task.FromResult<Report?>(signingBlocked)).GetAwaiter().GetResult();
+        Check("Signing repair prompts once, rechecks SMB, then connects only after verification",
+            signInRun.Steps is [{ Action: Repair.SignInToHost, StateMatches: true }, { Action: Repair.Connect, StateMatches: true }]
+            && signInRun.Final == after && signInSnapshots.Count == 0
+            && unconfirmedSignIn.Steps is [{ Action: Repair.SignInToHost, StateMatches: false }]);
         var snapshots = new Queue<Report?>([healthy, after]);
         SharedRepairRun run = SharedRepair.ExecuteAsync(TaskKind.Default, target, before, null, false,
             _ => Task.FromResult(new ActionResult("Verified by Windows.", Verified: true)),

@@ -14,7 +14,8 @@ internal sealed record SharingEvidence(bool LocalHost, bool? SharedQueuePresent,
     ServiceReading Spooler, ServiceReading Server, ServiceReading FirewallService, FirewallReading? Firewall,
     RegistrySetting Privacy, RegistrySetting RpcProtocols, RegistrySetting RpcTcpPort, RegistrySetting RpcKerberos,
     RegistrySetting Smb1, RegistrySetting Smb2, RegistrySetting ServerSigning, RegistrySetting ClientSigning,
-    RegistrySetting GuestPolicy, RegistrySetting RpcAuthentication, RegistrySetting RemoteSpooler);
+    RegistrySetting GuestPolicy, RegistrySetting RpcAuthentication, RegistrySetting RemoteSpooler,
+    RegistrySetting? LocalAccountModel = null);
 
 internal static class SharingSettings
 {
@@ -51,7 +52,7 @@ internal static class SharingSettings
             ReadSetting(Rpc, "ForceKerberosForRpc"), ReadSetting(SmbServer, "SMB1"), ReadSetting(SmbServer, "SMB2"),
             ReadSetting(SmbServer, "RequireSecuritySignature"), ReadSetting(SmbClient, "RequireSecuritySignature"),
             ReadSetting(SmbClientPolicy, "AllowInsecureGuestAuth"), ReadSetting(Rpc, "RpcAuthentication"),
-            ReadSetting(PrinterPolicy, "RegisterSpoolerRemoteRpcEndPoint"));
+            ReadSetting(PrinterPolicy, "RegisterSpoolerRemoteRpcEndPoint"), local ? ReadLocalAccountModel() : null);
         if (share is null)
             return evidence;
         if (await Task.WhenAny(share, Task.Delay(TimeSpan.FromSeconds(2))) != share)
@@ -62,6 +63,26 @@ internal static class SharingSettings
         var (present, error) = await share;
         return evidence with { SharedQueuePresent = present, SharedQueueError = error };
     }
+
+    internal static RegistrySetting ReadLocalAccountModel() =>
+        ReadSetting(@"SYSTEM\CurrentControlSet\Control\Lsa", "ForceGuest");
+
+    internal static SmbClientSettings ReadConfiguredSmbClient() => new(
+        Flag(ReadSetting(SmbClient, "RequireSecuritySignature")),
+        ConfiguredFlag("AllowInsecureGuestAuth"), ConfiguredFlag("RequireEncryption"), RegistryOnly: true);
+
+    private static bool? ConfiguredFlag(string name)
+    {
+        RegistrySetting policy = ReadSetting(SmbClientPolicy, name);
+        return Flag(policy is { Error: 0, Value: null } ? ReadSetting(SmbClient, name) : policy);
+    }
+
+    private static bool? Flag(RegistrySetting setting) => setting switch
+    {
+        { Error: 0, Value: 1 } => true,
+        { Error: 0, Value: 0 } => false,
+        _ => null
+    };
 
     public static (bool? Present, int? Error) CheckLocalShare(Target target)
     {
@@ -242,6 +263,8 @@ internal static class SharedRepair
         Repair.EnableSmbClient => report.Connectivity?.Health is null ? null : !report.Connectivity.ClientBindingOff,
         Repair.EnableSmbServer => report.Connectivity?.Health is null ? null : !report.Connectivity.ServerBindingOff,
         Repair.SecureHostSharing => report.Connectivity?.Health is null ? null : !report.Connectivity.PublicNetwork,
+        Repair.SignInToHost => report.Queue is { Code: 0 } || report.Connectivity?.Session is { Error: 0 } or { IpcError: 0 }
+            ? true : report.Connectivity?.Session is { IpcError: int } ? false : null,
         Repair.Connect or Repair.Reconnect => report.Inventory is { InventoryError: 0 } inventory
             ? inventory.Connections.Any(connection => Diagnose.Same(connection, target.Path)) : null,
         Repair.SetDefault => report.Inventory is { DefaultError: 0 } defaults ? Diagnose.Same(defaults.Default, target.Path) : null,

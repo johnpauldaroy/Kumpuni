@@ -3,8 +3,7 @@ using System.Runtime.InteropServices;
 namespace Kumpuni;
 
 // Opens an authenticated SMB session to the print host through Windows' own credential prompt.
-// Kumpuni never receives the password: Windows collects it and, when the user selects
-// "Remember my credentials", stores it in Credential Manager for this Windows user.
+// Windows collects credentials and can save them for this user when the provider supports it.
 internal static class HostSignIn
 {
     private const int ConnectTemporary = 0x4;
@@ -22,6 +21,9 @@ internal static class HostSignIn
             1219 => new("Windows already has a session to this host with a different account. "
                 + "Disconnect the other connections to the host or sign out of Windows, then try again.", Code: code),
             86 or 1326 => new("The print host did not accept the user name or password.", Code: code),
+            1327 => new("Windows reported an account restriction. Use an authorized host account with a password.", Code: code),
+            1272 or Connectivity.GuestSigningRequired or Connectivity.GuestEncryptionRequired =>
+                new("Windows still received a guest session. Use an authorized account with a password and check the host's local account sharing policy.", Code: code),
             53 or 67 => new("Windows could not reach the print host to sign in.", Code: code),
             _ => new("Windows did not complete the sign-in to the print host.", Code: code)
         };
